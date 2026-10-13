@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.4
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.5
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -30,7 +30,9 @@ flowchart TD
 - `IFileSystemProbe`：读取文件属性、判断是否目录。
 - `IKnownFolders`：已知文件夹；`PublicDesktop` 在 Windows 上由 `SHGetKnownFolderPath(FOLDERID_PublicDesktop)` 解析。
 - `MoveResult.Skipped` 带可选 `NativeErrorCode`（原始 Win32 错误码，预检查跳过时为空）和 `AbortReason`（如 `NeedsAdmin (Win32 5)`），写入 Journal 中止原因和日志。
-- `IJournal`：Pending → Committed / RolledBack 预写日志。
+- `IUnitOfWork` / `IUnitOfWorkFactory`（v1.0.5）：一个 SQLite 连接上的一个事务。`CommitAsync` 提交；未提交就释放即回滚。扩展方法 `InTransactionAsync` 负责“开事务 → 执行 → 提交”。
+- `IJournal`：Pending → Committed / RolledBack / Lost 预写日志。v1.0.5 起每个方法的第一个参数都是调用方传入的 `IUnitOfWork`，新增 `RecordRecoveryFailureAsync`（返回连续失败次数）。
+- `IVaultRecordStore.AddAsync(uow, record)`、`ILostFileNoticeStore.AddAsync/GetUnacknowledgedAsync/SaveAsync(uow, …)`：同上。**Journal 与所有 Store 不得自行打开连接**，只在传入的工作单元上读写（Infrastructure 实现从 `IUnitOfWork` 取 `SqliteConnection` 与 `SqliteTransaction`）。`JournaledMove`、`JournalRecovery`、`LostFileNotices` 通过构造函数注入 `IUnitOfWorkFactory`。
 - `ISnapshotStore`：快照，保留 10 份。
 - `IMonitorService`：显示器指纹、DPI、拔插事件。
 - `IDesktopHost`：WorkerW 嵌入、`FWF_NOICONS` 系统图标显隐、`ExplorerRestarted` 事件。
@@ -92,7 +94,24 @@ flowchart TD
 
 {1} 为文件名列表，以"、"分隔。
 
-**测试**：杀进程模拟覆盖第 1–4 次尝试的移动前 / 移动后（共 8 种），验证恢复结果分别为 Abort / Commit 到候选路径，且已有同名文件不被改动；另覆盖收纳库扫描、Lost 提示持久与确认、取消与探测异常。
+### 4.3.1 恢复流程自身的原子性与隔离（v1.0.5，修复 P1-2 / P1-3 / P2-3）
+- **同一事务**：每条 Pending 的“写业务表 + 改 Journal 状态”放进一个 SQLite 事务提交——补提交为 `vault_record` 加 `Commit`；标记丢失为先写 `LostFileNotice` 再 `MarkLost`；回滚只有 `RollBack`。中途崩溃时，要么两步都没发生（下次启动这条仍是 Pending，重新判断），要么两步都完成，不会出现“已有 vault_record 但仍 Pending”（P1-2，重启时撞 `vault_path` UNIQUE 而卡死）或“已 Lost 但没有提示”（P1-3）。`vault_record.vault_path` 与 `lost_file_notice.journal_entry_id` 的唯一约束保留，作为防御。
+- **按条隔离（P2-3）**：读取 file_id、扫描收纳库或写库时抛出的任何异常（`OperationCanceledException` 除外）只影响当前这一条：它保持 Pending，结果为 `RecoveryOutcome.Failed`，然后继续处理下一条。
+- **连续失败 3 次转 Lost**：失败时在新事务里执行 `RecordRecoveryFailureAsync`（`journal.recovery_failures` +1）。达到 `JournalEntry.MaxRecoveryFailures = 3` 时，在**同一事务**里写入提示并执行 MarkLost，结果为 `Lost`。如果连计数都写不进去（例如磁盘故障），就不改动任何数据，下次启动再试。
+- **结构化日志**：`IRecoveryLog.RecoveryFailed(EntryId, JobId, FileId, SourcePath, CandidatePath, ConsecutiveFailures, MarkedLost, ExceptionType, Message)`。
+- **DDL 增量**：`journal` 表新增 `recovery_failures INTEGER NOT NULL DEFAULT 0`，含义是恢复连续失败的次数。
+- **测试**：用 `FakeDb` 模拟事务，暂存的写入只在提交时生效。对恢复流程的每一步（开始事务、每次读写、提交）各注入一次“进程被杀”，然后重启并再跑恢复。验证：不抛异常；最终状态与不崩溃时一致；每条 Committed 恰好对应一条 vault_record，每条 Lost 恰好对应一条提示；失败计数不受被杀影响。另外覆盖：一条失败不阻塞其他条；收纳库扫描异常；连续 3 次失败后转 Lost；第 3 次失败的事务在提交时被杀，结果仍是全有或全无；取消不会被吞掉。
+
+### 4.3.2 Windows 路径规则（v1.0.5）
+Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随宿主系统变化，测试在 Linux 和 windows-2022 上会得到不同结果。路径的拼接与拆分统一使用 Domain 层的 `WinPath`，规则固定为 Windows：
+- `\` 和 `/` 都算分隔符；
+- 能识别盘符根 `C:\`、`C:`、UNC 根 `\\server\share\`，以及 `\\?\`、`\\?\UNC\` 前缀；
+- 比较不区分大小写（`PathEquals`、`Comparer`）；
+- 拼接一律使用 `\`。
+
+测试数据统一写成 `C:\v\...` 的形式。
+
+**测试（v1.0.4）**：杀进程模拟覆盖第 1–4 次尝试的移动前 / 移动后（共 8 种），验证恢复结果分别为 Abort / Commit 到候选路径，且已有同名文件不被改动；另覆盖收纳库扫描、Lost 提示持久与确认、取消与探测异常。
 
 ### 4.1.1 路径规范化（v1.0.3）
 所有传给 Win32 文件 API（`MoveFileExW`、`GetFileAttributesW` 等）的路径都必须经过 `Win32PathNormalizer.Normalize`（Application 层纯函数，可在 Linux 上测试）：
