@@ -1,6 +1,8 @@
 namespace DeskBox.Domain.Files;
 
-public enum SkipReason { Locked, ReadOnly, CrossVolume, CloudOnly, NeedsAdmin, NotFound, NameConflict, IoError }
+public enum SkipReason { Locked, ReadOnly, CrossVolume, CloudOnly, NeedsAdmin, NotFound, NameConflict, IoError,
+    /// <summary>同一文件已有未完成（Pending）的移动，本次跳过；不是错误，也不影响那次移动。</summary>
+    AlreadyInProgress }
 
 /// <summary>文件移动结果（可辨识联合）：要么 Moved，要么 Skipped。绝不覆盖。</summary>
 public abstract record MoveResult(string SourcePath)

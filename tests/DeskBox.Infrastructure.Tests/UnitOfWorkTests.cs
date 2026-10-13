@@ -62,7 +62,8 @@ public sealed class UnitOfWorkTests : IAsyncLifetime
         var act = () => _t.Tx(async u =>
         {
             await journal.AppendPendingAsync(u, e);
-            await journal.AppendPendingAsync(u, e); // 主键冲突
+            await journal.AppendPendingAsync(u, JournalEntry.Restore(e.Id, e.JobId, "1a2b3c4d:000000000000000000000000000000bb",
+                e.SourcePath, e.TargetPath, e.CreatedAt, 0, JournalStatus.Pending, null, null, 0)); // 主键冲突
         });
         (await act.Should().ThrowAsync<SqliteException>()).Which.SqliteErrorCode.Should().Be(19);
         (await _t.Scalar<long>("SELECT COUNT(*) FROM journal;")).Should().Be(0);

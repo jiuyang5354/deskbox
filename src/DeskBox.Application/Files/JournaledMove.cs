@@ -22,7 +22,15 @@ public sealed class JournaledMove(IUnitOfWorkFactory db, IFileMover mover, IJour
         if (fileId is null) return new MoveResult.Skipped(source, SkipReason.NotFound);
 
         var entry = new JournalEntry(Guid.NewGuid(), jobId, fileId, source, target, clock.GetUtcNow());
-        await db.InTransactionAsync(u => journal.AppendPendingAsync(u, entry, ct), ct);
+        try
+        {
+            await db.InTransactionAsync(u => journal.AppendPendingAsync(u, entry, ct), ct);
+        }
+        catch (JournalConflictException)
+        {
+            // 同一文件已有 Pending：本次什么都没写（事务已回滚），也不动那条 Pending
+            return new MoveResult.Skipped(source, SkipReason.AlreadyInProgress);
+        }
 
         var attemptStarted = false;
         MoveResult result;

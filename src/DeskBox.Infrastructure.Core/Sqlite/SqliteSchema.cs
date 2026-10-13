@@ -8,6 +8,9 @@ namespace DeskBox.Infrastructure.Sqlite;
 /// </summary>
 public static class SqliteSchema
 {
+    public const string JournalPendingIndex = "ux_journal_pending_file_id";
+
+    // 数据库尚未发布，v1 迁移原地修改（TDD v1.0.6 §4.4.2）
     internal static readonly string[] Migrations =
     [
         // v1
@@ -23,19 +26,22 @@ public static class SqliteSchema
             actual_target_path TEXT    NULL,                          -- Commit 时的实际落点
             abort_reason       TEXT    NULL,                          -- RollBack 原因（含 Win32 错误码）
             recovery_failures  INTEGER NOT NULL DEFAULT 0 CHECK (recovery_failures >= 0), -- 启动恢复连续失败次数
-            created_at         TEXT    NOT NULL                       -- ISO 8601（含时区）
+            created_at         TEXT    NOT NULL                       -- UTC，yyyy-MM-ddTHH:mm:ss.fffZ
         );
         CREATE INDEX ix_journal_status ON journal (status);
+        -- 同一 file_id 同时最多一条 Pending（Begin 时冲突 → Skipped(AlreadyInProgress)）
+        CREATE UNIQUE INDEX ux_journal_pending_file_id ON journal (file_id) WHERE status = 'Pending';
 
         CREATE TABLE vault_record (
             id            TEXT NOT NULL PRIMARY KEY,
-            original_path TEXT NOT NULL,
+            original_path TEXT NOT NULL COLLATE NOCASE,
             vault_path    TEXT NOT NULL COLLATE NOCASE,               -- 收纳库中的路径（不区分大小写唯一）
             file_id       TEXT NOT NULL,
             moved_at      TEXT NOT NULL,
             restored_at   TEXT NULL
         );
-        CREATE UNIQUE INDEX ux_vault_record_vault_path ON vault_record (vault_path);
+        -- 只约束在库中的记录：还原后同一路径可以再次收纳
+        CREATE UNIQUE INDEX ux_vault_record_vault_path ON vault_record (vault_path) WHERE restored_at IS NULL;
         CREATE INDEX ix_vault_record_file_id ON vault_record (file_id);
 
         CREATE TABLE lost_file_notice (

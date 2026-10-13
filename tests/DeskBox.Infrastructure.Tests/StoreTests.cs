@@ -38,7 +38,7 @@ public sealed class StoreTests : IAsyncLifetime
         var p = (await _t.Tx(u => _journal.GetPendingAsync(u))).Single();
         (p.Id, p.JobId, p.FileId, p.SourcePath, p.TargetPath, p.CreatedAt, p.Attempt, p.Status, p.RecoveryFailures)
             .Should().Be((e.Id, e.JobId, IdA, @"C:\desk\a.txt", @"C:\vault\a.txt", T0, 0, JournalStatus.Pending, 0));
-        p.CreatedAt.Offset.Should().Be(TimeSpan.FromHours(8));
+        p.CreatedAt.Offset.Should().Be(TimeSpan.Zero, "统一以 UTC 保存");
         (await Load(Guid.NewGuid())).Should().BeNull();
     }
 
@@ -93,8 +93,10 @@ public sealed class StoreTests : IAsyncLifetime
     public async Task Journal_guards_and_duplicate_id()
     {
         var e = await Seed();
-        (await FluentActions.Awaiting(() => _t.Tx(u => _journal.AppendPendingAsync(u, e))).Should().ThrowAsync<SqliteException>())
-            .Which.SqliteErrorCode.Should().Be(19);
+        await _t.Tx(u => _journal.MarkLostAsync(u, e.Id)); // 不再 Pending，排除部分唯一索引
+        var sameId = JournalEntry.Restore(e.Id, e.JobId, IdB, e.SourcePath, e.TargetPath, T0, 0, JournalStatus.Pending, null, null, 0);
+        (await FluentActions.Awaiting(() => _t.Tx(u => _journal.AppendPendingAsync(u, sameId))).Should().ThrowAsync<SqliteException>(
+            "主键冲突不是 AlreadyInProgress，按错误抛出")).Which.SqliteErrorCode.Should().Be(19);
         await FluentActions.Awaiting(() => _t.Tx(u => _journal.AppendPendingAsync(u, null!))).Should().ThrowAsync<ArgumentNullException>();
         await FluentActions.Awaiting(() => _t.Tx(u => _journal.CommitAsync(u, e.Id, " "))).Should().ThrowAsync<ArgumentException>();
         await FluentActions.Awaiting(() => _t.Tx(u => _journal.RollBackAsync(u, e.Id, ""))).Should().ThrowAsync<ArgumentException>();
@@ -194,6 +196,111 @@ public sealed class StoreTests : IAsyncLifetime
         await FluentActions.Awaiting(() => _t.Tx(u => _snapshots.SaveAsync(u, null!))).Should().ThrowAsync<ArgumentNullException>();
     }
 
+    // ---------- 架构评审：约束与时间格式 ----------
+    [Fact]
+    public async Task Second_pending_for_same_file_id_is_a_typed_conflict_and_allowed_after_completion()
+    {
+        var first = await Seed(IdA, @"C:\vault\a.txt");
+        var again = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"C:\desk\a.txt", @"C:\vault\a (2).txt", T0);
+        var ex = (await FluentActions.Awaiting(() => _t.Tx(u => _journal.AppendPendingAsync(u, again)))
+            .Should().ThrowAsync<JournalConflictException>()).Which;
+        ex.FileId.Should().Be(IdA);
+        ex.InnerException.Should().BeOfType<SqliteException>().Which.SqliteExtendedErrorCode.Should().Be(2067);
+        (await Load(first.Id))!.Status.Should().Be(JournalStatus.Pending, "另一条 Pending 不受影响");
+
+        await _t.Tx(u => _journal.CommitAsync(u, first.Id, @"C:\vault\a.txt"));
+        await _t.Tx(u => _journal.AppendPendingAsync(u, again));
+        await _t.Tx(u => _journal.RollBackAsync(u, again.Id, "Locked (Win32 32)"));
+        await Seed(IdA, @"C:\vault\a (3).txt"); // 提交 / 回滚之后都可以再开新的 Pending
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM journal WHERE file_id = '" + IdA + "';")).Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Conflict_rolls_back_only_to_savepoint_and_unit_of_work_keeps_working()
+    {
+        await Seed(IdA, @"C:\vault\a.txt");
+        var b = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdB, @"C:\desk\b.txt", @"C:\vault\b.txt", T0);
+        var c = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "1A2B3C4D:000000000000000000000000000000CC", @"C:\desk\c.txt", @"C:\vault\c.txt", T0);
+        var dup = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"C:\desk\a.txt", @"C:\vault\a.txt", T0);
+        await _t.Tx(async u =>
+        {
+            await _journal.AppendPendingAsync(u, b); // 同一事务里冲突之前写的
+            await FluentActions.Awaiting(() => _journal.AppendPendingAsync(u, dup)).Should().ThrowAsync<JournalConflictException>();
+            await _journal.AppendPendingAsync(u, c); // 冲突之后同一工作单元继续写其他文件
+        });
+        (await _t.Tx(u => _journal.GetPendingAsync(u))).Select(e => e.FileId).Should().BeEquivalentTo(new[] { IdA, IdB, c.FileId });
+        (await Load(dup.Id)).Should().BeNull();
+    }
+
+    [Fact]
+    public void Only_unique_2067_on_pending_index_maps_to_conflict()
+    {
+        StoreTests.Ex(2067, "SQLite Error 19: 'UNIQUE constraint failed: journal.file_id'.").Should().BeTrue();
+        StoreTests.Ex(2067, $"SQLite Error 19: 'UNIQUE constraint failed: index '{SqliteSchema.JournalPendingIndex}''.").Should().BeTrue();
+        StoreTests.Ex(2067, "SQLite Error 19: 'UNIQUE constraint failed: vault_record.vault_path'.").Should().BeFalse();
+        StoreTests.Ex(1555, "SQLite Error 19: 'UNIQUE constraint failed: journal.id'.").Should().BeFalse("主键冲突 = 1555");
+        StoreTests.Ex(787, "FOREIGN KEY constraint failed").Should().BeFalse();
+    }
+
+    private static bool Ex(int extended, string message) =>
+        SqliteJournal.IsPendingConflict(new SqliteException(message, 19, extended));
+
+    [Fact]
+    public async Task Other_unique_violation_in_vault_record_propagates_as_error()
+    {
+        var r = new VaultRecord(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt", IdA, T0);
+        await _t.Tx(u => _vault.AddAsync(u, r));
+        var dup = new VaultRecord(Guid.NewGuid(), @"C:\desk\b.txt", @"C:\VAULT\A.TXT", IdB, T0);
+        (await FluentActions.Awaiting(() => _t.Tx(u => _vault.AddAsync(u, dup))).Should().ThrowAsync<SqliteException>())
+            .Which.SqliteExtendedErrorCode.Should().Be(2067, "两条在库记录同一路径 → 错误，不是 AlreadyInProgress");
+    }
+
+    [Fact]
+    public async Task Restored_record_frees_its_vault_path_for_re_vaulting()
+    {
+        var r1 = new VaultRecord(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt", IdA, T0);
+        await _t.Tx(u => _vault.AddAsync(u, r1));
+        await _t.Tx(u => _vault.MarkRestoredAsync(u, r1.Id, T0.AddHours(1)));
+        var r2 = new VaultRecord(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt", IdA, T0.AddHours(2));
+        await _t.Tx(u => _vault.AddAsync(u, r2));
+        (await _t.Tx(u => _vault.FindByVaultPathAsync(u, @"C:\vault\a.txt")))!.Id.Should().Be(r2.Id, "优先返回在库中的记录");
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM vault_record;")).Should().Be(2);
+        await FluentActions.Awaiting(() => _t.Tx(u => _vault.MarkRestoredAsync(u, r1.Id, T0))).Should().ThrowAsync<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task Original_path_is_case_insensitive()
+    {
+        await _t.Tx(u => _vault.AddAsync(u, new VaultRecord(Guid.NewGuid(), @"C:\Desk\A.txt", @"C:\vault\a.txt", IdA, T0)));
+        (await _t.Scalar<long>(@"SELECT COUNT(*) FROM vault_record WHERE original_path = 'c:\desk\a.TXT';")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Timestamps_are_stored_as_fixed_width_utc_text_and_sort_correctly()
+    {
+        var hk = new DateTimeOffset(2026, 10, 13, 9, 0, 0, 123, TimeSpan.FromHours(8));   // 01:00:00.123Z
+        var ny = new DateTimeOffset(2026, 10, 12, 20, 30, 0, TimeSpan.FromHours(-4));      // 00:30:00.000Z，更早
+        var later = await Seed(IdA, @"C:\vault\1", hk);
+        var earlier = await Seed(IdB, @"C:\vault\2", ny);
+        (await _t.Scalar<string>($"SELECT created_at FROM journal WHERE id = '{later.Id:D}';")).Should().Be("2026-10-13T01:00:00.123Z");
+        (await _t.Scalar<string>($"SELECT created_at FROM journal WHERE id = '{earlier.Id:D}';")).Should().Be("2026-10-13T00:30:00.000Z");
+        (await _t.Tx(u => _journal.GetPendingAsync(u))).Select(e => e.Id).Should().Equal(earlier.Id, later.Id);
+        (await Load(later.Id))!.CreatedAt.Should().Be(hk, "同一时刻").And.Subject!.Value.Offset.Should().Be(TimeSpan.Zero);
+    }
+
+    [Theory]
+    [InlineData("2026-01-02T03:04:05.006Z")]
+    [InlineData("0001-01-01T00:00:00.000Z")]
+    public void Time_format_roundtrips(string text) => SqliteTime.Format(SqliteTime.Parse(text)).Should().Be(text);
+
+    [Fact]
+    public void Time_format_truncates_to_milliseconds_and_rejects_other_formats()
+    {
+        SqliteTime.Format(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddTicks(12_345)).Should().Be("2026-01-01T00:00:00.001Z");
+        FluentActions.Invoking(() => SqliteTime.Parse("2026-01-01T00:00:00+08:00")).Should().Throw<FormatException>();
+        FluentActions.Invoking(() => SqliteTime.Parse(null!)).Should().Throw<ArgumentNullException>();
+    }
+
     // ---------- 端到端：JournalRecovery + SQLite ----------
     private sealed class Ids(Dictionary<string, string> map) : IFileIdentity, IVaultIndex
     {
@@ -241,5 +348,52 @@ public sealed class StoreTests : IAsyncLifetime
         (await Load(clash.Id))!.Status.Should().Be(JournalStatus.Lost);
         (await _t.Tx(u => _notices.GetUnacknowledgedAsync(u))).Should().HaveCount(2);
         (await new LostFileNotices(_t.Db, _notices, TimeProvider.System).GetMessageAsync()).Should().Contain("b.txt").And.Contain("c.txt");
+    }
+}
+
+/// <summary>JournaledMove + SqliteJournal：同一文件已有 Pending 时，Begin 就返回 AlreadyInProgress，不调用移动。</summary>
+public sealed class AlreadyInProgressIntegrationTests : IAsyncLifetime
+{
+    private const string IdA = "1A2B3C4D:000000000000000000000000000000AA";
+    private readonly TempDb _t = new();
+    public Task InitializeAsync() => _t.InitializeAsync();
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    private sealed class CountingMover : IFileMover
+    {
+        public int Calls { get; private set; }
+        public Task<Domain.Files.MoveResult> MoveAsync(string sourcePath, string targetPath,
+            Func<string, CancellationToken, Task>? beforeAttempt, CancellationToken ct = default)
+        {
+            Calls++;
+            return Task.FromResult<Domain.Files.MoveResult>(new Domain.Files.MoveResult.Moved(sourcePath, targetPath));
+        }
+    }
+
+    private sealed class Fixed : IFileIdentity { public string? TryGetFileId(string fullPath) => IdA; }
+    private sealed class NoLog : IRecoveryLog
+    {
+        public int Count { get; private set; }
+        public void UncertainPending(UncertainPendingEvent e) => Count++;
+        public void RecoveryFailed(RecoveryFailedEvent e) => Count++;
+    }
+
+    [Fact]
+    public async Task Second_move_of_same_file_while_pending_is_skipped_at_begin()
+    {
+        var journal = new SqliteJournal();
+        var pending = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"C:\desk\a.txt", @"C:\vault\a.txt", DateTimeOffset.UtcNow);
+        await _t.Tx(u => journal.AppendPendingAsync(u, pending)); // 另一个整理任务正在移动它
+        var mover = new CountingMover();
+        var log = new NoLog();
+        var sut = new JournaledMove(_t.Db, mover, journal, new Fixed(), log, TimeProvider.System);
+
+        var r = await sut.ExecuteAsync(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt");
+
+        r.Should().Be(new Domain.Files.MoveResult.Skipped(@"C:\desk\a.txt", Domain.Files.SkipReason.AlreadyInProgress));
+        mover.Calls.Should().Be(0);
+        log.Count.Should().Be(0);
+        (await _t.Tx(u => journal.GetPendingAsync(u))).Should().ContainSingle().Which.Id.Should().Be(pending.Id);
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM journal;")).Should().Be(1);
     }
 }

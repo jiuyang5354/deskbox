@@ -56,6 +56,16 @@ public interface IUnitOfWorkFactory
     Task<IUnitOfWork> BeginAsync(CancellationToken ct = default);
 }
 
+/// <summary>
+/// 写入 Pending 时，同一 file_id 已有一条 Pending（journal 上 file_id 的部分唯一索引）。
+/// 由 <see cref="IJournal.AppendPendingAsync"/> 抛出；调用方据此返回 Skipped(AlreadyInProgress)，不是错误。
+/// </summary>
+public sealed class JournalConflictException(string fileId, Exception? inner = null)
+    : Exception($"file_id {fileId} 已有未完成的移动", inner)
+{
+    public string FileId { get; } = fileId;
+}
+
 /// <summary>移动操作预写日志，崩溃后可恢复。所有操作都在调用方的工作单元内执行。</summary>
 public interface IJournal
 {

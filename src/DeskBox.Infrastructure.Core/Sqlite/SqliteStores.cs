@@ -5,12 +5,30 @@ using Microsoft.Data.Sqlite;
 
 namespace DeskBox.Infrastructure.Sqlite;
 
+/// <summary>
+/// 所有时间统一以 UTC 文本保存，固定格式 yyyy-MM-ddTHH:mm:ss.fffZ（定长，按文本排序即按时间排序）。
+/// 写入时先转 UTC 并截断到毫秒；读出为 Offset = 0 的 DateTimeOffset。
+/// </summary>
+public static class SqliteTime
+{
+    public const string FormatString = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
+
+    public static string Format(DateTimeOffset t) => t.UtcDateTime.ToString(FormatString, CultureInfo.InvariantCulture);
+
+    public static DateTimeOffset Parse(string s)
+    {
+        ArgumentNullException.ThrowIfNull(s);
+        var dt = DateTime.ParseExact(s, FormatString, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
+        return new DateTimeOffset(DateTime.SpecifyKind(dt, DateTimeKind.Utc));
+    }
+}
+
 internal static class Sql
 {
     public static string Id(Guid g) => g.ToString("D");
-    public static string Time(DateTimeOffset t) => t.ToString("O", CultureInfo.InvariantCulture);
-    public static string? Time(DateTimeOffset? t) => t?.ToString("O", CultureInfo.InvariantCulture);
-    public static DateTimeOffset ParseTime(string s) => DateTimeOffset.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+    public static string Time(DateTimeOffset t) => SqliteTime.Format(t);
+    public static string? Time(DateTimeOffset? t) => t is { } v ? SqliteTime.Format(v) : null;
+    public static DateTimeOffset ParseTime(string s) => SqliteTime.Parse(s);
     public static Guid ParseId(string s) => Guid.ParseExact(s, "D");
 
     public static async Task<IReadOnlyList<T>> ListAsync<T>(SqliteCommand c, Func<SqliteDataReader, T> map, CancellationToken ct)
@@ -35,19 +53,43 @@ public sealed class SqliteJournal : IJournal
 {
     private const string Pending = nameof(JournalStatus.Pending);
 
-    public Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default)
+    /// <summary>
+    /// 在 SAVEPOINT 里插入：只有命中 <see cref="SqliteSchema.JournalPendingIndex"/> 的唯一冲突
+    /// 才回滚到保存点并抛 <see cref="JournalConflictException"/>，工作单元仍可继续使用；其他错误原样抛出。
+    /// </summary>
+    public async Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(entry);
-        return SqliteUnitOfWork.From(uow).ExecuteAsync(
-            """
-            INSERT INTO journal (id, job_id, file_id, source_path, target_path, attempt, status, actual_target_path, abort_reason, recovery_failures, created_at)
-            VALUES ($id, $job, $fid, $src, $dst, $attempt, $status, $actual, $reason, $failures, $created);
-            """, ct,
-            ("$id", Sql.Id(entry.Id)), ("$job", Sql.Id(entry.JobId)), ("$fid", entry.FileId), ("$src", entry.SourcePath),
-            ("$dst", entry.TargetPath), ("$attempt", entry.Attempt), ("$status", entry.Status.ToString()),
-            ("$actual", entry.ActualTargetPath), ("$reason", entry.AbortReason), ("$failures", entry.RecoveryFailures),
-            ("$created", Sql.Time(entry.CreatedAt)));
+        var s = SqliteUnitOfWork.From(uow);
+        await s.ExecuteAsync("SAVEPOINT append_pending;", ct);
+        try
+        {
+            await s.ExecuteAsync(
+                """
+                INSERT INTO journal (id, job_id, file_id, source_path, target_path, attempt, status, actual_target_path, abort_reason, recovery_failures, created_at)
+                VALUES ($id, $job, $fid, $src, $dst, $attempt, $status, $actual, $reason, $failures, $created);
+                """, ct,
+                ("$id", Sql.Id(entry.Id)), ("$job", Sql.Id(entry.JobId)), ("$fid", entry.FileId), ("$src", entry.SourcePath),
+                ("$dst", entry.TargetPath), ("$attempt", entry.Attempt), ("$status", entry.Status.ToString()),
+                ("$actual", entry.ActualTargetPath), ("$reason", entry.AbortReason), ("$failures", entry.RecoveryFailures),
+                ("$created", Sql.Time(entry.CreatedAt)));
+        }
+        catch (SqliteException ex) when (IsPendingConflict(ex))
+        {
+            await s.ExecuteAsync("ROLLBACK TO append_pending;", ct);
+            await s.ExecuteAsync("RELEASE append_pending;", ct);
+            throw new JournalConflictException(entry.FileId, ex);
+        }
+        await s.ExecuteAsync("RELEASE append_pending;", ct);
     }
+
+    internal const int SqliteConstraintUnique = 2067;
+
+    /// <summary>仅 SQLITE_CONSTRAINT_UNIQUE 且消息点名 Pending 部分唯一索引（或其列）。</summary>
+    internal static bool IsPendingConflict(SqliteException ex) =>
+        ex.SqliteExtendedErrorCode == SqliteConstraintUnique &&
+        (ex.Message.Contains(SqliteSchema.JournalPendingIndex, StringComparison.Ordinal) ||
+         ex.Message.Contains("UNIQUE constraint failed: journal.file_id", StringComparison.Ordinal));
 
     public async Task UpdateCandidateAsync(IUnitOfWork uow, Guid entryId, string candidatePath, int attempt, CancellationToken ct = default)
     {
@@ -128,11 +170,20 @@ public sealed class SqliteVaultRecordStore : IVaultRecordStore
             ("$fid", record.FileId), ("$moved", Sql.Time(record.MovedAt)), ("$restored", Sql.Time(record.RestoredAt)));
     }
 
-    /// <summary>按收纳库路径读取（不区分大小写）。</summary>
+    /// <summary>标记已还原（仅在库中的记录）。之后同一 vault_path 可以再次收纳。</summary>
+    public async Task MarkRestoredAsync(IUnitOfWork uow, Guid id, DateTimeOffset at, CancellationToken ct = default)
+    {
+        var n = await SqliteUnitOfWork.From(uow).ExecuteAsync(
+            "UPDATE vault_record SET restored_at = $at WHERE id = $id AND restored_at IS NULL;", ct,
+            ("$at", Sql.Time(at)), ("$id", Sql.Id(id)));
+        if (n != 1) throw new InvalidOperationException($"vault_record {id} 不存在或已还原");
+    }
+
+    /// <summary>按收纳库路径读取（不区分大小写），优先返回在库中的记录。</summary>
     public async Task<VaultRecord?> FindByVaultPathAsync(IUnitOfWork uow, string vaultPath, CancellationToken ct = default)
     {
         var list = await SqliteUnitOfWork.From(uow).RunAsync(
-            "SELECT id, original_path, vault_path, file_id, moved_at, restored_at FROM vault_record WHERE vault_path = $p;",
+            "SELECT id, original_path, vault_path, file_id, moved_at, restored_at FROM vault_record WHERE vault_path = $p ORDER BY restored_at IS NOT NULL, moved_at DESC LIMIT 1;",
             c => Sql.ListAsync(c, r =>
             {
                 var v = new VaultRecord(Sql.ParseId(r.GetString(0)), r.GetString(1), r.GetString(2), r.GetString(3), Sql.ParseTime(r.GetString(4)));

@@ -81,6 +81,7 @@ public class SkipReasonTextTests
     [InlineData(SkipReason.ReadOnly, "磁盘处于写保护状态")]
     [InlineData(SkipReason.NameConflict, "同名文件太多，无法自动改名")]
     [InlineData(SkipReason.IoError, "未知错误，详情见日志")]
+    [InlineData(SkipReason.AlreadyInProgress, "这个文件正在整理中，已跳过")]
     public void Exact_texts(SkipReason reason, string expected)
     {
         SkipReasonText.Get(reason, CultureInfo.GetCultureInfo("zh-CN")).Should().Be(expected);
