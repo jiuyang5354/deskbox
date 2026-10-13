@@ -23,7 +23,7 @@ public sealed record StartupResult(StartupOutcome Outcome, IReadOnlyList<Recover
 /// 锁、数据库、嵌入失败直接抛出，由启动入口决定退出。
 /// </summary>
 public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrapper database, IStagingSelfCheck staging, IStartupRecovery recovery,
-    IDesktopEnumerator desktop, IStartupEmbedder embedder, IStartupNotifier notifier, OperatingMode mode)
+    IDesktopEnumerator desktop, IStartupEmbedder embedder, IStartupNotifier notifier, OperatingMode mode, IDesktopScanLog? scanLog = null)
 {
     public async Task<StartupResult> RunAsync(CancellationToken ct = default)
     {
@@ -62,10 +62,14 @@ public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrap
         {
             mode.EnterReadOnly(failure);
             notifier.ReadOnlyMode(failure);
+            scanLog?.DesktopScanSkipped(failure);
         }
         else
         {
+            scanLog?.DesktopScanStarted();
             await foreach (var item in desktop.EnumerateAsync(ct)) items.Add(item);
+            // 启动序列目前没有把枚举结果写入 fence_item 的步骤（TDD v1.0.13 §4.5.5 调查结论），写入行数如实记 0
+            scanLog?.DesktopScanCompleted(items.Count(i => !i.IsPublicDesktop), items.Count(i => i.IsPublicDesktop), fenceItemRowsWritten: 0);
         }
 
         await embedder.StartAsync(ct);

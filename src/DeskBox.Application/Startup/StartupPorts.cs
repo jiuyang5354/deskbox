@@ -36,3 +36,14 @@ public interface IStartupNotifier
     /// <summary>恢复失败，进入只读模式：不移动任何文件。</summary>
     void ReadOnlyMode(string reason);
 }
+
+/// <summary>启动时桌面扫描日志：只记数量，不记文件内容（TDD v1.0.13 §4.5.5）。</summary>
+public interface IDesktopScanLog
+{
+    /// <summary>只读模式跳过了枚举。</summary>
+    void DesktopScanSkipped(string reason);
+
+    void DesktopScanStarted();
+
+    void DesktopScanCompleted(int userDesktopItems, int publicDesktopItems, int fenceItemRowsWritten);
+}

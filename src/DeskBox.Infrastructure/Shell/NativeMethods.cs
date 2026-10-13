@@ -15,6 +15,39 @@ internal static partial class NativeMethods
     internal const uint SwpNoActivate = 0x0010;
     internal const uint MsgfltAllow = 1;
     internal static readonly IntPtr HwndBottom = 1;
+    internal static readonly IntPtr HwndTop = 0;
+    internal const uint SwpFrameChanged = 0x0020;
+    internal const uint SwpShowWindow = 0x0040;
+    internal const int GwlStyle = -16;
+    internal const int GwlExStyle = -20;
+    internal const long WsChild = 0x40000000;
+    internal const long WsPopup = 0x80000000;
+    internal const long WsVisible = 0x10000000;
+    internal const long WsExNoActivate = 0x08000000;
+    internal const uint GaParent = 1;
+    internal const uint GaRoot = 2;
+    internal const int WmWindowPosChanging = 0x0046;
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct WindowPos
+    {
+        public IntPtr Hwnd, InsertAfter;
+        public int X, Y, Cx, Cy;
+        public uint Flags;
+    }
+
+    [LibraryImport("user32.dll", EntryPoint = "GetClassNameW", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int GetClassName(IntPtr hwnd, [Out] char[] buffer, int max);
+
+    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    internal static partial IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+
+    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    internal static partial IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool ClientToScreen(IntPtr hwnd, ref Point point);
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct Rect { public int Left, Top, Right, Bottom; }

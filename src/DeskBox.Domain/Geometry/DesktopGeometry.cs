@@ -9,6 +9,13 @@ public readonly record struct ScreenRect(int X, int Y, int Width, int Height)
     public bool Contains(ScreenRect r) => r.X >= X && r.Y >= Y && r.Right <= Right && r.Bottom <= Bottom;
 
     public bool ContainsPoint(int x, int y) => x >= X && x < Right && y >= Y && y < Bottom;
+
+    /// <summary>两矩形有面积大于 0 的交集。</summary>
+    public bool Intersects(ScreenRect r) => Width > 0 && Height > 0 && r.Width > 0 && r.Height > 0
+        && r.X < Right && X < r.Right && r.Y < Bottom && Y < r.Bottom;
+
+    /// <summary>屏幕坐标 → 父窗口客户区坐标。clientOrigin 是父窗口客户区左上角的屏幕坐标（Progman 覆盖虚拟屏幕，原点可能为负）。</summary>
+    public ScreenRect RelativeTo(int clientOriginX, int clientOriginY) => this with { X = X - clientOriginX, Y = Y - clientOriginY };
 }
 
 /// <summary>

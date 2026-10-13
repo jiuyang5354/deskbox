@@ -95,32 +95,78 @@ public interface IMonitorService
 }
 
 /// <summary>
-/// 桌面层 Win32 调用（TDD §4.5）。只做 SendMessage / FindWindow / SetParent / SetWindowPos 这类公开窗口 API，
-/// 不注入 DLL、不装钩子。所有句柄都是"当次查找"的结果，调用方不得跨 Explorer 重启缓存。
+/// 桌面窗口树的只读查询（TDD v1.0.13 §4.5.1）。可注入：单元测试用假窗口树覆盖旧层级、24H2 以后的新层级、只有隐藏 WorkerW 等情况。
+/// 所有句柄都是"当次查找"的结果，调用方不得跨 Explorer 重启缓存。
 /// </summary>
-public interface IDesktopWindowing
+public interface IDesktopWindowTree
 {
     /// <summary>找 Progman 窗口；没有桌面（无 Explorer / 非交互会话）时返回 <see cref="IntPtr.Zero"/>。</summary>
     IntPtr FindProgman();
 
-    /// <summary>向 Progman 发 0x052C（带超时），让它生成壁纸层 WorkerW。返回消息是否送达。</summary>
+    /// <summary>向 Progman 发 0x052C（带超时），让它生成 WorkerW。返回消息是否送达。</summary>
     bool SpawnWorkerW(IntPtr progman);
 
-    /// <summary>找到图标层之后的 WorkerW（Win11 24H2 起为 Progman 的子窗口）；找不到返回 Zero。</summary>
-    IntPtr FindWorkerW(IntPtr progman);
+    /// <summary>按 Z 序（从上到下）列出顶层窗口。</summary>
+    IReadOnlyList<IntPtr> TopLevelWindows();
 
+    /// <summary>parent 的直接子窗口中 after 之后第一个类名为 className 的窗口；parent 为 Zero 时在顶层窗口里找。找不到返回 Zero。</summary>
+    IntPtr FindChild(IntPtr parent, IntPtr after, string className);
+
+    string ClassName(IntPtr hwnd);
+
+    /// <summary>窗口自身是否带 WS_VISIBLE（不看祖先，祖先由调用方逐层检查）。</summary>
+    bool IsVisible(IntPtr hwnd);
+
+    /// <summary>真正的父窗口；顶层窗口返回 Zero。</summary>
+    IntPtr Parent(IntPtr hwnd);
+
+    /// <summary>GetAncestor(GA_ROOT)。</summary>
+    IntPtr Root(IntPtr hwnd);
+
+    bool IsWindow(IntPtr hwnd);
+
+    /// <summary>系统版本信息，只用于日志（CurrentBuild.UBR 与 DisplayVersion）；层级判断从不看版本号或 ProductName。</summary>
+    OsVersionInfo OsVersion { get; }
+}
+
+/// <summary>系统版本，仅供日志。</summary>
+public sealed record OsVersionInfo(string Build, string DisplayVersion)
+{
+    public override string ToString() => $"build {Build}, DisplayVersion {DisplayVersion}";
+}
+
+/// <summary>
+/// 窗口操作（TDD §4.5）。只做 SetParent / SetWindowPos 这类公开窗口 API，不注入 DLL、不装钩子。
+/// </summary>
+public interface IDesktopWindowing
+{
     bool IsWindow(IntPtr hwnd);
 
     IntPtr GetParent(IntPtr hwnd);
 
-    /// <summary>设置父窗口；parent 为 Zero 表示还原为普通顶层窗口。返回是否成功。</summary>
+    /// <summary>
+    /// 设置父窗口。parent 非 Zero：改为 WS_CHILD（去掉 WS_POPUP），并放到 parent 子窗口 Z 序最上面；
+    /// parent 为 Zero：还原为 WS_POPUP 顶层窗口。返回是否成功。
+    /// </summary>
     bool SetParent(IntPtr child, IntPtr parent);
 
-    /// <summary>降级模式：作为普通顶层窗口放到 Z 序最底（HWND_BOTTOM，不激活）。</summary>
-    void SetBottomMost(IntPtr hwnd);
+    /// <summary>
+    /// 兼容显示（降级）：普通顶层窗口，加 WS_EX_NOACTIVATE，放到 Z 序最底，并<b>持续</b>钉在最底
+    /// （窗口过程处理 WM_WINDOWPOSCHANGING 时按 <see cref="Desktop.FallbackZOrder"/> 改回 HWND_BOTTOM）。
+    /// </summary>
+    void PinToBottom(IntPtr hwnd);
 
-    /// <summary>按<b>屏幕物理像素</b>放置窗口；已嵌入时实现负责换算到父窗口客户区坐标。</summary>
+    /// <summary>取消 <see cref="PinToBottom"/>（重新嵌入成功时）。</summary>
+    void Unpin(IntPtr hwnd);
+
+    /// <summary>按<b>屏幕物理像素</b>放置窗口；已嵌入时实现负责换算到父窗口客户区坐标（虚拟屏幕原点可能为负）。</summary>
     void SetBounds(IntPtr hwnd, ScreenRect screen);
+}
+
+/// <summary>嵌入与桌面扫描日志（写入 %LocalAppData%\DeskBox\logs）。只记文件名和数量，不记文件内容。</summary>
+public interface IEmbedLog
+{
+    void EmbedAttempt(Desktop.EmbedReport report);
 }
 
 /// <summary>Explorer 广播给顶层窗口的通知（RegisterWindowMessage("TaskbarCreated")、WM_DISPLAYCHANGE）。</summary>

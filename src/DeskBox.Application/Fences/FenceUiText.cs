@@ -9,6 +9,12 @@ public static class FenceUiText
     public const string NoOtherFence = "没有其他方框";
     public const string NoStagingFence = "数据异常，未删除";
 
+    /// <summary>托盘提示（PRD §6A）：兼容显示时写明原因，不弹窗、不进只读模式。</summary>
+    public const string TrayNormal = "DeskBox";
+    public const string EmbedFallback = "桌面嵌入不可用，已切换为兼容显示";
+
+    public static string TrayTooltip(Desktop.EmbedMode mode) => mode == Desktop.EmbedMode.Degraded ? $"DeskBox：{EmbedFallback}" : TrayNormal;
+
     /// <summary>删除方框前的确认文案（PM 定）。</summary>
     public static string Deleted(int moved) => moved == 0 ? "方框已删除" : $"方框已删除，{moved} 个文件已移到暂存方框";
 
