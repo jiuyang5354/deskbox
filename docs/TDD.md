@@ -154,16 +154,17 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   - `IDesktopWindowTree`（只读，可注入）：`FindProgman`、`SpawnWorkerW`（0x052C）、`TopLevelWindows`、`FindChild`、`ClassName`、`IsVisible`、`Parent`、`Root`（GA_ROOT）、`OsVersion`。实现 `Win32DesktopWindowTree`；单元测试用 `FakeDesktop` 假窗口树。
   - `IDesktopWindowing`（操作）：`SetParent`、`PinToBottom` / `Unpin`、`SetBounds`。实现 `Win32DesktopWindowing`。
 - **层级判断按窗口结构，不按系统版本号或 ProductName**（`DesktopHostLocator.Locate`）。发完 0x052C 后：
-  1. Progman 下面有子窗口 `WorkerW` → **新层级 `ProgmanChild`**：父窗口用 **Progman**；
+  1. Progman 下面有子窗口 `WorkerW` → **新层级 `ProgmanChild`**：父窗口用 **Progman**。**必须先查新层级**：24H2 上残留的隐藏顶层 WorkerW 可能与 Progman 的子 WorkerW 同时存在，先按旧规则找会挂到那个隐藏窗口上，正是本次 P0 的成因；
   2. 否则 → **旧层级 `Legacy`**（逻辑与 v1.0.12 相同）：持有 `SHELLDLL_DefView` 的顶层窗口之后的那个顶层 `WorkerW`；
   3. 找不到 Progman 或旧层级下找不到 WorkerW → `NotFound`，直接兼容显示。
 - 挂接 `SetParent`：先改样式为 `WS_CHILD`、去掉 `WS_POPUP`，再 `SetParent`，成功后 `SetWindowPos(HWND_TOP)` 放到父窗口子窗口 Z 序最上面（新层级下即 `SHELLDLL_DefView` 之上，能看到也能点到）；失败则恢复原样式。还原顶层时反向改回 `WS_POPUP`。
 - 坐标：`SetBounds` 收屏幕物理像素，嵌入时用 `ClientToScreen(parent, 0,0)` 取父窗口客户区原点，按 `ScreenRect.RelativeTo` 换算（Progman 覆盖整个虚拟屏幕，原点可能为负）。数据库仍存工作区相对 DIP（§4.5.2 不变）。
 - **挂载后校验**（`EmbedValidator`），三条任一不满足 → 撤回挂载（`SetParent(box, 0)`）、退回兼容显示、记警告：
   1. 父窗口链上每一层都 `IsVisible`；
-  2. 方框与至少一块显示器的工作区有交集；
+  2. 用 `GetWindowRect` 读方框**实际**屏幕位置：必须与至少一块显示器的工作区有交集，且 x / y / 宽 / 高与 `FenceLayout.Place` 的目标偏差都不超过 1px（发现坐标换算错误）；
   3. `Root(box)` 是 Progman，或类名为 `WorkerW` 且可见。
   规则：**方框必须能看见，嵌不进桌面也要显示**。
+- **逐个方框隔离**：每个方框的「挂接 + 放置（`SetBounds`）+ 校验」是一个整体，其中任何一步抛异常（`OutOfMemoryException`、取消除外）都按校验失败处理：撤回挂接、退回兼容显示、日志 `validation` 字段写明异常类型和消息，然后继续下一个方框；兼容显示自身的放置再抛也只记日志不外抛。首次 `StartAsync` 与 `TaskbarCreated` 重新嵌入走同一路径，一个方框出错不会让其他方框被跳过、`Mode` 不更新或异常冒出 `StartAsync`。
 - 每个方框每次挂接写一条日志 `Embed fence=… os=[build <CurrentBuild.UBR>, DisplayVersion <25H2>] layering=… parent=[类名链] validation=[…] path=Embedded|Fallback`（兼容显示为 WARN）。
 - 同一时间只有一轮挂接（`SemaphoreSlim`）。
 
@@ -178,6 +179,8 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - `Win32ShellNotifications` 在专用 STA 线程上建隐藏的**顶层**窗口接收 `TaskbarCreated` / `WM_DISPLAYCHANGE`，事件封送到 UI 线程。
 - 收到 `TaskbarCreated`：**完整重跑**「发 0x052C → 判断层级 → 挂接 → 校验」，从不沿用上一轮的父窗口句柄（例如旧层级挂好后系统升级到 24H2、Explorer 重启，下一轮会挂到 Progman）。当前处于兼容显示时同样每次重试；成功后 `Unpin` 并把托盘提示恢复为「DeskBox」。无轮询。
 - **兼容显示（降级）**：找不到桌面层、`SetParent` 失败或挂载后校验失败时，方框还原为普通顶层窗口并 `PinToBottom`：加 `WS_EX_NOACTIVATE`、`SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)`，并登记为"钉住"；方框窗口过程处理 `WM_WINDOWPOSCHANGING`，按 `FallbackZOrder.Adjust` 把任何改 Z 序的请求改成 `HWND_BOTTOM`（修复「降级模式下方框浮到最前面」）。`Mode = Degraded`。
+- 兼容显示登记表 `PinnedWindows`：`Unpin` 或窗口收到 `WM_NCDESTROY` 时移除（句柄可能被系统复用，不能误钉别的窗口）。
+- **第二实例唤醒**（`EmbedAwareActivator`）：嵌入桌面时照旧恢复并置前；兼容显示时**不** `Activate`、不把方框带到前面，只弹一次托盘气泡「DeskBox 已在运行」。
 - 托盘图标（`Win32TrayIcon`，Shell_NotifyIcon）：兼容显示时提示「DeskBox：桌面嵌入不可用，已切换为兼容显示」，不弹窗；文件收纳和移动照常可用，**不进只读模式**。Explorer 重启后重新添加图标。
 - 单元测试（`FakeDesktop` 假窗口树，`DesktopEmbedTests` / `DesktopLayeringTests`）：旧层级挂到壁纸层 WorkerW；新层级挂到 Progman；只有隐藏的 WorkerW → 校验失败 → 兼容显示且可见；旧层级挂好后 `TaskbarCreated` 时变成新层级 → 重新挂到 Progman；兼容显示每次 `TaskbarCreated` 重试，成功后提示恢复；兼容显示的方框被点击后仍在其他窗口下面（修复前为红）；校验拒绝屏外方框与错误的根窗口；无 Progman → 降级且不忙重试；Explorer 重启后位置来自数据库。
 
@@ -311,7 +314,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 UI 线程只渲染；枚举、规则匹配、IO 走 `Task.Run` + `Channel<T>`。图标 LRU 缓存 512 项；`VirtualizingWrapPanel` 支持 2000+ 文件。空闲无轮询（Explorer 巡检除外）。目标启动 ≤ 1.5 s，空闲内存 ≤ 80 MB。
 
 ## 6. 可观测性
-落盘日志（v1.0.13，`RollingFileLog`，Infrastructure.Core）：`%LOCALAPPDATA%\DeskBox\logs\deskbox.log`，单文件 5 MB，超过就滚动为 `deskbox.1.log`…`deskbox.3.log`（保留 3 份，最旧的丢弃）；写失败不抛、只计数。`RollingFileTraceListener` 把现有 `Trace.TraceWarning/TraceError`（迁移、自检、恢复、启动失败）一并写入。路径和文件只记文件名与数量，不记文件内容。用户反馈问题时附上该目录（PRD §6A）。
+落盘日志（v1.0.13，`RollingFileLog`，Infrastructure.Core）：**拿到单实例锁之后才打开**（`StartupSequence` 的 `instanceAcquired` 回调里 `Open()` 并挂上 Trace 监听），打开前的写入直接丢弃，第二实例不建目录、不写文件；`%LOCALAPPDATA%\DeskBox\logs\deskbox.log`，单文件 5 MB，超过就滚动为 `deskbox.1.log`…`deskbox.3.log`（保留 3 份，最旧的丢弃）；写失败不抛、只计数。`RollingFileTraceListener` 把现有 `Trace.TraceWarning/TraceError`（迁移、自检、恢复、启动失败）一并写入。路径和文件只记文件名与数量，不记文件内容。用户反馈问题时附上该目录（PRD §6A）。
 后续：每条带 `JobId` 与耗时；全局捕获 `DispatcherUnhandledException` 与 AppDomain 未处理异常。
 
 ## 7. 对 PRD 的澄清（已被 PM 采纳为 v1.1）

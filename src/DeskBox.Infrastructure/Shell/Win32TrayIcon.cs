@@ -11,10 +11,10 @@ namespace DeskBox.Infrastructure.Shell;
 /// Explorer 重启（TaskbarCreated）后重新添加图标。必须在 UI 线程创建与使用。
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed partial class Win32TrayIcon : IDisposable
+public sealed partial class Win32TrayIcon : Application.Startup.ITrayNotifier, IDisposable
 {
     private const uint NimAdd = 0, NimModify = 1, NimDelete = 2;
-    private const uint NifIcon = 0x2, NifTip = 0x4;
+    private const uint NifIcon = 0x2, NifTip = 0x4, NifInfo = 0x10, NiifInfo = 0x1;
     private static readonly IntPtr HwndMessage = -3;
 
     private readonly IShellNotifications _shell;
@@ -36,19 +36,27 @@ public sealed partial class Win32TrayIcon : IDisposable
         if (!_disposed) Notify(NimModify);
     }
 
+    /// <summary>托盘气泡（不抢焦点、不把方框带到前面）。</summary>
+    public void ShowNotice(string text)
+    {
+        if (!_disposed) Notify(NimModify, text);
+    }
+
     private void OnTaskbarCreated(object? sender, EventArgs e)
     {
         if (!_disposed) Notify(NimAdd);
     }
 
-    private void Notify(uint message)
+    private void Notify(uint message, string? info = null)
     {
         if (_owner == IntPtr.Zero) return;
         var data = new NotifyIconData
         {
             Size = Marshal.SizeOf<NotifyIconData>(), Hwnd = _owner, Id = 1, Flags = NifIcon | NifTip,
             Icon = LoadIcon(IntPtr.Zero, 32512 /* IDI_APPLICATION */), Tip = _tip,
+            Info = info ?? string.Empty, InfoTitle = info is null ? string.Empty : "DeskBox", InfoFlags = info is null ? 0 : NiifInfo,
         };
+        if (info is not null) data.Flags |= NifInfo;
         Shell_NotifyIcon(message, ref data);
     }
 

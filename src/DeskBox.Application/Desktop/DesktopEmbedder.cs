@@ -118,9 +118,7 @@ public sealed class DesktopEmbedder : Startup.IStartupEmbedder, IDisposable
                 if (!validation.Ok)
                 {
                     all = false;
-                    if (_win.GetParent(hwnd) != IntPtr.Zero) _win.SetParent(hwnd, IntPtr.Zero);
-                    _win.PinToBottom(hwnd);
-                    _win.SetBounds(hwnd, bounds);
+                    validation = Fallback(hwnd, bounds, validation);
                 }
                 _log.EmbedAttempt(new EmbedReport(fence.Id, os, host.Layering,
                     host.Host == IntPtr.Zero ? "-" : DesktopHostLocator.ClassChain(_tree, host.Host),
@@ -138,12 +136,39 @@ public sealed class DesktopEmbedder : Startup.IStartupEmbedder, IDisposable
         Attached?.Invoke(this, Mode);
     }
 
+    /// <summary>
+    /// 挂接 + 放置 + 校验作为一个整体：其中任何一步抛异常都按校验失败处理（异常类型和消息写进日志的 validation 字段），
+    /// 由调用方撤回挂接、退回兼容显示，再继续下一个方框。
+    /// </summary>
     private EmbedValidation TryEmbed(IntPtr hwnd, DesktopHost host, Domain.Geometry.ScreenRect bounds, IReadOnlyList<MonitorInfo> monitors)
     {
-        _win.Unpin(hwnd);
-        if (!_win.SetParent(hwnd, host.Host)) return new(false, "SetParent 失败");
-        _win.SetBounds(hwnd, bounds);
-        return EmbedValidator.Validate(_tree, hwnd, bounds, monitors, host.Progman);
+        try
+        {
+            _win.Unpin(hwnd);
+            if (!_win.SetParent(hwnd, host.Host)) return new(false, "SetParent 失败");
+            _win.SetBounds(hwnd, bounds);
+            return EmbedValidator.Validate(_tree, hwnd, bounds, monitors, host.Progman);
+        }
+        catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
+        {
+            return new(false, $"挂接异常 {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>撤回挂接、钉在最底并放到数据库位置。这里的异常同样不外抛：记进日志，方框至少保持顶层置底，继续下一个方框。</summary>
+    private EmbedValidation Fallback(IntPtr hwnd, Domain.Geometry.ScreenRect bounds, EmbedValidation failed)
+    {
+        try
+        {
+            if (_win.GetParent(hwnd) != IntPtr.Zero) _win.SetParent(hwnd, IntPtr.Zero);
+            _win.PinToBottom(hwnd);
+            _win.SetBounds(hwnd, bounds);
+            return failed;
+        }
+        catch (Exception ex) when (ex is not (OutOfMemoryException or OperationCanceledException))
+        {
+            return failed with { Detail = $"{failed.Detail}；兼容显示放置异常 {ex.GetType().Name}: {ex.Message}" };
+        }
     }
 
     public void Dispose()

@@ -142,6 +142,166 @@ public class DesktopLayeringTests
             "DeskBox：桌面嵌入不可用，已切换为兼容显示", "DeskBox：桌面嵌入不可用，已切换为兼容显示", "DeskBox");
     }
 
+    private Fence AddFence(string title, int x)
+    {
+        var f = new Fence(Guid.NewGuid(), title, Primary.Fingerprint, x, 24, 200, 200);
+        _fences.Rows[f.Id] = f;
+        return f;
+    }
+
+    [Theory]
+    [InlineData(FakeLayering.Legacy)]
+    [InlineData(FakeLayering.ProgmanChild)]
+    public async Task Set_bounds_throwing_for_one_fence_falls_back_that_fence_only_and_start_does_not_throw(FakeLayering layering)
+    {
+        _desk.Layering = layering;
+        _desk.StartExplorer(broadcast: false);
+        var bad = AddFence("坏", 400);
+        var after = AddFence("后", 700);
+        _desk.SetBoundsFailsFor.Add(_desk.Ensure(bad));
+        using var sut = Sut();
+
+        await FluentActions.Awaiting(() => sut.StartAsync()).Should().NotThrowAsync();
+
+        var badBox = sut.Windows[bad.Id];
+        _desk.GetParent(badBox).Should().Be(IntPtr.Zero, "撤回挂接，不留在未校验的父窗口下");
+        _desk.BottomMost.Should().Contain(badBox);
+        foreach (var ok in new[] { _staging.Id, after.Id })
+        {
+            _desk.GetParent(sut.Windows[ok]).Should().Be(_desk.Worker, "其余方框照常嵌入（包括排在出错方框之后的）");
+            _desk.BottomMost.Should().NotContain(sut.Windows[ok]);
+        }
+        sut.Mode.Should().Be(EmbedMode.Degraded, "有方框在兼容显示");
+        _log.Reports.Should().HaveCount(3);
+        var r = _log.Reports.Single(x => x.FenceId == bad.Id);
+        r.Path.Should().Be(EmbedPath.Fallback);
+        r.Validation.Should().Contain("InvalidOperationException").And.Contain("SetWindowPos 失败（Win32 5）");
+    }
+
+    [Fact]
+    public async Task Set_bounds_throwing_during_taskbar_created_reembed_is_handled_the_same_way()
+    {
+        _desk.StartExplorer(broadcast: false);
+        var bad = AddFence("坏", 400);
+        using var sut = Sut();
+        var failures = new List<Exception>();
+        sut.AttachFailed += (_, e) => failures.Add(e);
+        await sut.StartAsync();
+        sut.Mode.Should().Be(EmbedMode.Embedded);
+
+        _desk.SetBoundsFailsFor.Add(sut.Windows[bad.Id]);
+        _desk.FailWhileEmbeddedOnly = false; // 兼容显示的放置也抛：仍不外抛，记进日志
+        _desk.Broadcast();
+
+        failures.Should().BeEmpty("逐个方框处理，异常不会冒到 AttachFailed");
+        _desk.GetParent(sut.Windows[bad.Id]).Should().Be(IntPtr.Zero);
+        _desk.BottomMost.Should().Contain(sut.Windows[bad.Id]);
+        _desk.GetParent(sut.Windows[_staging.Id]).Should().Be(_desk.Worker);
+        sut.Mode.Should().Be(EmbedMode.Degraded);
+        _log.Reports.Last(x => x.FenceId == bad.Id).Validation.Should().Contain("挂接异常").And.Contain("兼容显示放置异常 InvalidOperationException");
+    }
+
+    [Theory]
+    [InlineData(1920, "没有交集")] // 例如忘了减去虚拟屏幕原点，挪到了屏外
+    [InlineData(8, "偏差超过 1px")]  // 仍在屏内但位置不对
+    public async Task Wrong_coordinate_conversion_is_caught_by_get_window_rect_and_falls_back(int errorPx, string reason)
+    {
+        _desk.Layering = FakeLayering.ProgmanChild;
+        _desk.StartExplorer(broadcast: false);
+        _desk.ConversionErrorPx = errorPx;
+        using var sut = Sut();
+
+        await sut.StartAsync();
+
+        sut.Mode.Should().Be(EmbedMode.Degraded);
+        var box = Box(sut);
+        _desk.GetParent(box).Should().Be(IntPtr.Zero);
+        _desk.BottomMost.Should().Contain(box);
+        _desk.WindowRect(box).Should().Be(new ScreenRect(24, 24, 280, 320), "兼容显示的顶层窗口按屏幕坐标放置");
+        _log.Reports.Single().Validation.Should().Contain(reason);
+    }
+
+    [Fact]
+    public async Task Stale_top_level_worker_and_progman_child_worker_together_choose_progman()
+    {
+        _desk.Layering = FakeLayering.ProgmanChild;
+        _desk.StartExplorer(broadcast: false);
+        _desk.SpawnWorkerW(_desk.Progman);
+        var stale = _desk.AddStaleTopLevelWorkerAfterProgman();
+        // 旧层级的查找规则在这棵树上会选中那个隐藏的顶层 WorkerW
+        _desk.FindChild(IntPtr.Zero, _desk.Progman, "WorkerW").Should().Be(stale);
+        using var sut = Sut();
+
+        await sut.StartAsync();
+
+        sut.Layering.Should().Be(DesktopLayering.ProgmanChild);
+        sut.Mode.Should().Be(EmbedMode.Embedded);
+        _desk.GetParent(Box(sut)).Should().Be(_desk.Progman).And.NotBe(stale);
+    }
+
+    private sealed class FakeTray : ITrayNotifier
+    {
+        public List<string> Notices { get; } = [];
+        public void ShowNotice(string text) => Notices.Add(text);
+    }
+
+    private sealed class BringAllToFront(FakeDesktop desk, Func<IEnumerable<IntPtr>> windows) : IWindowActivator
+    {
+        public void RestoreActivateAndBringToFront()
+        {
+            foreach (var h in windows()) desk.ForceToFront(h);
+        }
+    }
+
+    [Fact]
+    public async Task Second_launch_in_fallback_shows_tray_notice_once_and_never_brings_boxes_forward()
+    {
+        using var sut = Sut(); // 无 Explorer → 兼容显示
+        await sut.StartAsync();
+        var box = Box(sut);
+        _desk.OpenAppWindow();
+        var tray = new FakeTray();
+        var activator = new EmbedAwareActivator(new BringAllToFront(_desk, () => sut.Windows.Values), () => sut.Mode, tray);
+
+        activator.RestoreActivateAndBringToFront();
+
+        _desk.ForcedToFront.Should().Be(0, "兼容显示时不 Activate、不置前");
+        _desk.IsBelowAllOtherWindows(box).Should().BeTrue();
+        tray.Notices.Should().Equal("DeskBox 已在运行");
+    }
+
+    [Fact]
+    public async Task Second_launch_when_embedded_still_restores_and_brings_to_front()
+    {
+        _desk.StartExplorer(broadcast: false);
+        using var sut = Sut();
+        await sut.StartAsync();
+        var tray = new FakeTray();
+        new EmbedAwareActivator(new BringAllToFront(_desk, () => sut.Windows.Values), () => sut.Mode, tray).RestoreActivateAndBringToFront();
+        _desk.ForcedToFront.Should().Be(1);
+        tray.Notices.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Pinned_entry_is_removed_on_nc_destroy_not_only_on_unpin()
+    {
+        var pins = new PinnedWindows();
+        pins.Pin(10);
+        pins.Pin(11);
+        pins.OnMessage(10, PinnedWindows.WmWindowPosChanging).Should().BeTrue();
+        pins.OnMessage(10, 0x0001 /* WM_CREATE */).Should().BeFalse();
+        pins.OnMessage(12, PinnedWindows.WmWindowPosChanging).Should().BeFalse("没钉住的不改");
+
+        pins.OnMessage(10, PinnedWindows.WmNcDestroy).Should().BeFalse();
+
+        pins.IsPinned(10).Should().BeFalse("窗口销毁后句柄可能被复用，必须移除");
+        pins.OnMessage(10, PinnedWindows.WmWindowPosChanging).Should().BeFalse();
+        pins.Count.Should().Be(1);
+        pins.Unpin(11).Should().BeTrue();
+        pins.Unpin(11).Should().BeFalse();
+        pins.Count.Should().Be(0);
+    }
+
     /// <summary>「降级模式下方框浮到最前面」：修复前（WM_WINDOWPOSCHANGING 不处理）这条是红的。</summary>
     [Fact]
     public async Task Degraded_box_stays_below_other_windows_after_user_clicks_it()
@@ -174,9 +334,15 @@ public class DesktopLayeringTests
         var box = _desk.Ensure(_staging);
         _desk.SetParent(box, host.Host);
         IReadOnlyList<MonitorInfo> monitors = [Primary];
+        _desk.SetBounds(box, new ScreenRect(10, 10, 100, 100));
 
         EmbedValidator.Validate(_desk, box, new ScreenRect(10, 10, 100, 100), monitors, host.Progman).Should().Be(EmbedValidation.Passed);
+        EmbedValidator.Validate(_desk, box, new ScreenRect(11, 9, 101, 99), monitors, host.Progman).Ok.Should().BeTrue("1px 以内算对");
+        EmbedValidator.Validate(_desk, box, new ScreenRect(12, 10, 100, 100), monitors, host.Progman).Detail.Should().Contain("偏差超过 1px");
+        EmbedValidator.Validate(_desk, box, new ScreenRect(10, 10, 100, 102), monitors, host.Progman).Detail.Should().Contain("偏差");
+        _desk.SetBounds(box, new ScreenRect(5000, 10, 100, 100));
         EmbedValidator.Validate(_desk, box, new ScreenRect(5000, 10, 100, 100), monitors, host.Progman).Detail.Should().Contain("没有交集");
+        _desk.SetBounds(box, new ScreenRect(10, 10, 100, 100));
 
         var other = _desk.OpenAppWindow();
         _desk.SetParent(box, other);
@@ -266,6 +432,26 @@ public class DesktopScanLogTests
         var log = new Rec();
         await new StartupSequence(p, p, p, p, p, p, p, new OperatingMode(), log).RunAsync();
         log.Lines.Should().Equal("started", "completed:2/1/0");
+    }
+
+    [Fact]
+    public async Task Instance_acquired_hook_runs_only_for_the_first_instance_before_migration()
+    {
+        var p = new Parts(false);
+        var calls = 0;
+        await new StartupSequence(p, p, p, p, p, p, p, new OperatingMode(), null, () => calls++).RunAsync();
+        calls.Should().Be(1);
+
+        var second = new SecondInstance();
+        var r = await new StartupSequence(second, p, p, p, p, p, p, new OperatingMode(), null, () => calls++).RunAsync();
+        r.Outcome.Should().Be(StartupOutcome.SecondInstance);
+        calls.Should().Be(1, "第二实例不打开日志");
+    }
+
+    private sealed class SecondInstance : ISingleInstance
+    {
+        public bool TryAcquire() => false;
+        public void SignalRunningInstance() { }
     }
 
     [Fact]

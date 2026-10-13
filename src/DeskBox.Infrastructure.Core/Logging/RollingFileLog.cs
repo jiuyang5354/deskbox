@@ -10,7 +10,7 @@ namespace DeskBox.Infrastructure.Logging;
 /// <summary>
 /// 落盘日志（TDD v1.0.13 §6）：写 <c>%LocalAppData%\DeskBox\logs\deskbox.log</c>，单个文件超过 <see cref="MaxBytes"/> 就滚动，
 /// 保留 <see cref="KeepRolled"/> 份旧文件（deskbox.1.log 最新 … deskbox.3.log 最旧）。线程安全；写失败不抛（日志不能把程序弄崩），
-/// 失败次数记在 <see cref="WriteFailures"/>。只记文件名和数量，不记文件内容。
+/// 失败次数记在 <see cref="WriteFailures"/>。必须先 <see cref="Open"/>。只记文件名和数量，不记文件内容。
 /// </summary>
 public sealed class RollingFileLog : IEmbedLog, IDesktopScanLog
 {
@@ -32,7 +32,25 @@ public sealed class RollingFileLog : IEmbedLog, IDesktopScanLog
     public string Directory { get; }
     public long MaxBytes { get; }
     public int KeepRolled { get; }
-    public int WriteFailures { get; private set; }
+    private int _writeFailures;
+    private bool _open;
+
+    public int WriteFailures
+    {
+        get { lock (_lock) return _writeFailures; }
+    }
+
+    /// <summary>是否已打开。打开之前的写入直接丢弃、不建目录不建文件（第二实例在拿到单实例锁之前不写日志）。</summary>
+    public bool IsOpen
+    {
+        get { lock (_lock) return _open; }
+    }
+
+    /// <summary>拿到单实例锁之后调用。</summary>
+    public void Open()
+    {
+        lock (_lock) _open = true;
+    }
 
     public string CurrentPath => PathOf(0);
 
@@ -45,6 +63,7 @@ public sealed class RollingFileLog : IEmbedLog, IDesktopScanLog
         var bytes = Encoding.UTF8.GetBytes(line);
         lock (_lock)
         {
+            if (!_open) return;
             try
             {
                 System.IO.Directory.CreateDirectory(Directory);
@@ -55,7 +74,7 @@ public sealed class RollingFileLog : IEmbedLog, IDesktopScanLog
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                WriteFailures++;
+                _writeFailures++;
                 Debug.WriteLine($"DeskBox 日志写入失败：{ex.Message}");
             }
         }

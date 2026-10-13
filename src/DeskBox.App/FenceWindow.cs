@@ -61,11 +61,10 @@ public sealed class FenceWindow : Window
 
     private static IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmWindowPosChanging) DeskBox.Infrastructure.Shell.Win32DesktopWindowing.FilterWindowPosChanging(hwnd, lParam);
+        // WM_WINDOWPOSCHANGING：兼容显示时压回 HWND_BOTTOM；WM_NCDESTROY：移除钉住登记
+        DeskBox.Infrastructure.Shell.Win32DesktopWindowing.OnWindowMessage(hwnd, msg, lParam);
         return IntPtr.Zero;
     }
-
-    private const int WmWindowPosChanging = 0x0046;
 
     public FenceView View => _view;
 

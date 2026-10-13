@@ -19,6 +19,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void Defaults_are_5mb_and_keep_3()
     {
         var log = new RollingFileLog(_dir);
+        log.Open();
         (log.MaxBytes, log.KeepRolled).Should().Be((5L * 1024 * 1024, 3));
         log.CurrentPath.Should().Be(Path.Combine(_dir, "deskbox.log"));
         log.PathOf(2).Should().Be(Path.Combine(_dir, "deskbox.2.log"));
@@ -28,6 +29,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void Creates_directory_and_appends_lines()
     {
         var log = new RollingFileLog(_dir);
+        log.Open();
         log.Info("hello");
         log.Warn("w");
         log.Error("e");
@@ -43,6 +45,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void Rolls_when_size_exceeded_and_keeps_only_three_old_files()
     {
         var log = new RollingFileLog(_dir, maxBytes: 200, keepRolled: 3);
+        log.Open();
         for (var i = 0; i < 40; i++) log.Info($"line {i:D3} " + new string('x', 60));
 
         var files = Directory.GetFiles(_dir).Select(Path.GetFileName).Order().ToList();
@@ -57,6 +60,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void A_single_line_larger_than_the_limit_is_still_written()
     {
         var log = new RollingFileLog(_dir, maxBytes: 10, keepRolled: 1);
+        log.Open();
         log.Info(new string('a', 50));
         log.Info(new string('b', 50));
         File.ReadAllText(log.CurrentPath).Should().Contain(new string('b', 50));
@@ -67,6 +71,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void Keep_zero_discards_the_old_file()
     {
         var log = new RollingFileLog(_dir, maxBytes: 10, keepRolled: 0);
+        log.Open();
         log.Info("first line");
         log.Info("second line");
         Directory.GetFiles(_dir).Should().ContainSingle();
@@ -80,6 +85,7 @@ public sealed class RollingFileLogTests : IDisposable
         try
         {
             var log = new RollingFileLog(_dir);
+        log.Open();
             FluentActions.Invoking(() => log.Info("x")).Should().NotThrow();
             log.WriteFailures.Should().Be(1);
         }
@@ -93,6 +99,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void Embed_and_scan_lines_carry_layering_os_and_counts_only()
     {
         var log = new RollingFileLog(_dir);
+        log.Open();
         var id = Guid.NewGuid();
         log.EmbedAttempt(new EmbedReport(id, new OsVersionInfo("26200.9457", "25H2"), DesktopLayering.ProgmanChild, "Progman(0x10)", "ok", EmbedPath.Embedded));
         log.EmbedAttempt(new EmbedReport(id, new OsVersionInfo("26200.9457", "25H2"), DesktopLayering.Legacy, "WorkerW(0x20)", "父窗口不可见：WorkerW(0x20)", EmbedPath.Fallback));
@@ -113,6 +120,7 @@ public sealed class RollingFileLogTests : IDisposable
     public void Trace_listener_forwards_trace_calls_into_the_file()
     {
         var log = new RollingFileLog(_dir);
+        log.Open();
         using var listener = new RollingFileTraceListener(log);
         var source = new TraceSource("t", SourceLevels.All);
         source.Listeners.Clear();
@@ -130,6 +138,19 @@ public sealed class RollingFileLogTests : IDisposable
         lines[1].Should().EndWith("[ERROR] plain");
         lines[2].Should().EndWith("[INFO] w");
         FluentActions.Invoking(() => new RollingFileTraceListener(null!)).Should().Throw<ArgumentNullException>();
+    }
+
+    [Fact]
+    public void Nothing_is_written_before_open()
+    {
+        var log = new RollingFileLog(_dir);
+        log.IsOpen.Should().BeFalse();
+        log.Info("second instance");
+        Directory.Exists(_dir).Should().BeFalse("没拿到单实例锁之前不建目录、不写 deskbox.log");
+        log.Open();
+        log.IsOpen.Should().BeTrue();
+        log.Info("first instance");
+        File.ReadAllText(log.CurrentPath).Should().Contain("first instance").And.NotContain("second instance");
     }
 
     [Fact]
