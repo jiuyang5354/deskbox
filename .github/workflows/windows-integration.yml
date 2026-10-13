@@ -31,13 +31,40 @@ jobs:
       - name: Test (Category=WindowsIntegration)
         shell: pwsh
         run: |
-          # 没有匹配的测试时，VSTest 打印 "No test matches the given testcase filter" 并返回 0；
-          # 部分 SDK/测试平台版本返回 8（零测试），这里同样视为成功。
+          # 匹配到 0 条、或只跳过不执行，都必须失败（看 trx 的 executed，不算 notExecuted）。
+          # 不再把 VSTest 退出码 8（零测试）当成成功。
           dotnet test DeskBox.sln -c Release --no-build `
             --filter "Category=WindowsIntegration" `
             --logger trx --results-directory TestResults
           $code = $LASTEXITCODE
-          if ($code -eq 8) { Write-Output 'No WindowsIntegration tests matched; treating as success.'; exit 0 }
+          if ($code -ne 0 -and $code -ne 8) { exit $code }
+
+          $trxFiles = Get-ChildItem -Path TestResults -Filter *.trx -Recurse -ErrorAction SilentlyContinue
+          if (-not $trxFiles) {
+            Write-Error 'No .trx files found under TestResults; refusing green with zero evidence.'
+            exit 1
+          }
+
+          $executed = 0
+          foreach ($f in $trxFiles) {
+            [xml]$xml = Get-Content -LiteralPath $f.FullName -Raw
+            $ns = @{ t = 'http://microsoft.com/schemas/VisualStudio/TeamTest/2010' }
+            $counters = Select-Xml -Xml $xml -XPath '//t:Counters' -Namespace $ns | ForEach-Object { $_.Node }
+            if (-not $counters) { $counters = Select-Xml -Xml $xml -XPath '//Counters' | ForEach-Object { $_.Node } }
+            foreach ($c in $counters) {
+              $executed += [int]$c.executed
+            }
+          }
+
+          Write-Output "TRX executed (sum across files)=$executed"
+          if ($executed -le 0) {
+            Write-Error "WindowsIntegration gate failed: trx executed=$executed (skipped/notExecuted do not count). At least one test must actually run."
+            exit 1
+          }
+          if ($code -eq 8) {
+            Write-Error "dotnet test exit code 8 (no matching tests) but gate requires executed>0."
+            exit 1
+          }
           exit $code
 
       - name: Upload test results
