@@ -22,7 +22,7 @@ public class JournalRecoveryTests
     private readonly FakeDb _db = new();
     private readonly IRecoveryLog _log = Substitute.For<IRecoveryLog>();
 
-    private JournaledMove Move() => new(_db, new RenamingFileMover(_fs, _fs, _fs), _journal, _fs, _log, TimeProvider.System);
+    private JournaledMove Move() => new(_db, new RenamingFileMover(_fs, _fs, _fs), _journal, _fs, _fs, _log, TimeProvider.System);
     private JournalRecovery Recovery() => new(_db, _journal, _fs, _fs, _records, _notices, _log, TimeProvider.System);
     private Task Seed(JournalEntry e) => _db.InTransactionAsync(u => _journal.AppendPendingAsync(u, e));
     private LostFileNotices Notices() => new(_db, _notices, TimeProvider.System);
@@ -165,7 +165,7 @@ public class JournalRecoveryTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         var journal = Substitute.For<IJournal>();
-        var sut = new JournaledMove(_db, new RenamingFileMover(_fs, _fs, _fs), journal, _fs, _log, TimeProvider.System);
+        var sut = new JournaledMove(_db, new RenamingFileMover(_fs, _fs, _fs), journal, _fs, _fs, _log, TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst, cts.Token)).Should().ThrowAsync<OperationCanceledException>();
         await journal.Received(1).RollBackAsync(Arg.Any<IUnitOfWork>(), Arg.Any<Guid>(), "Cancelled", CancellationToken.None);
         _fs.Attempts.Should().BeEmpty();
@@ -177,7 +177,7 @@ public class JournalRecoveryTests
         _fs.Files[Src] = IdA;
         var probe = Substitute.For<IFileSystemProbe>();
         probe.GetAttributes(Src).Returns(_ => throw new UnauthorizedAccessException("denied"));
-        var sut = new JournaledMove(_db, new RenamingFileMover(_fs, probe, _fs), _journal, _fs, _log, TimeProvider.System);
+        var sut = new JournaledMove(_db, new RenamingFileMover(_fs, probe, _fs), _journal, _fs, _fs, _log, TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<UnauthorizedAccessException>();
         var e = _journal.Entries.Values.Single();
         (e.Status, e.AbortReason).Should().Be((JournalStatus.RolledBack, "Interrupted (UnauthorizedAccessException)"));
@@ -221,7 +221,7 @@ public class JournalRecoveryTests
         identity.TryGetFileId(Src).Returns(_ => ++calls == 1 ? IdA : throw new IOException("busy"));
         var native = Substitute.For<INativeFileMove>();
         native.Move(Src, Dst).Returns(_ => throw new InvalidOperationException("boom"));
-        var sut = new JournaledMove(_db, new RenamingFileMover(native, _fs, _fs), _journal, identity, _log, TimeProvider.System);
+        var sut = new JournaledMove(_db, new RenamingFileMover(native, _fs, _fs), _journal, identity, _fs, _log, TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<InvalidOperationException>();
         _journal.Entries.Values.Single().Status.Should().Be(JournalStatus.Pending);
         _log.ReceivedWithAnyArgs(1).UncertainPending(default!);

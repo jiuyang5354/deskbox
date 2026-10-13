@@ -364,6 +364,12 @@ public sealed class AlreadyInProgressIntegrationTests : IAsyncLifetime
     }
 
     private sealed class Fixed : IFileIdentity { public string? TryGetFileId(string fullPath) => IdA; }
+    private sealed class NoProbe : IFileSystemProbe
+    {
+        public bool IsDirectory(string path) => false;
+        public uint? GetAttributes(string path) => 0x20;
+    }
+
     private sealed class NoLog : IRecoveryLog
     {
         public int Count { get; private set; }
@@ -379,7 +385,7 @@ public sealed class AlreadyInProgressIntegrationTests : IAsyncLifetime
         await _t.Tx(u => journal.AppendPendingAsync(u, pending)); // 另一个整理任务正在移动它
         var mover = new CountingMover();
         var log = new NoLog();
-        var sut = new JournaledMove(_t.Db, mover, journal, new Fixed(), log, TimeProvider.System);
+        var sut = new JournaledMove(_t.Db, mover, journal, new Fixed(), new NoProbe(), log, TimeProvider.System);
 
         var r = await sut.ExecuteAsync(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt");
 

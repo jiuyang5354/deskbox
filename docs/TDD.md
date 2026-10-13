@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.6
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.7
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -95,6 +95,14 @@ flowchart TD
 > 有 {0} 个文件在上次整理中断后没能找回：{1}。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。
 
 {1} 为文件名列表，以"、"分隔。
+
+### 4.2.1 桌面枚举与云端 / 占用检测（v1.0.7，任务 3）
+- `DesktopEnumerator`（Application）只列用户桌面与公共桌面的**直接子项**；按 `file_id`（OrdinalIgnoreCase）去重，非法 `file_id` 跳过；某个桌面列举失败不影响另一个。
+- `WindowsDirectoryLister`（Infrastructure.Core）：以 `FILE_LIST_DIRECTORY | FILE_FLAG_BACKUP_SEMANTICS` 打开**目录**句柄，`GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` 一次取名字 / 属性 / 128 位 file_id / 修改时间，**不打开任何子项**、不跟随联接点 / 符号链接目录（它们作为项列出，`IsReparsePoint=true`）。路径经 `Win32PathNormalizer`（`\\?\` 前缀）。
+- 云端文件：仅凭属性位 `RECALL_ON_DATA_ACCESS(0x400000) | RECALL_ON_OPEN(0x40000) | OFFLINE(0x1000)` 判定；`JournaledMove` 在读取 file_id（会打开文件）之前先检查，命中直接 `Skipped(CloudOnly)`，不写 Journal。
+- 占用：不预先打开探测，由 `MoveFileExW` 返回 32 / 33 映射为 `Locked`；跨分区 17 → `CrossVolume`，不带 `MOVEFILE_COPY_ALLOWED`、不重试。
+- 顺序不变：`BEGIN IMMEDIATE` 内查重 + 写 Pending → 写候选 → `MoveFileExW` → Commit / RollBack。
+- 监听：`FileSystemDirectoryWatcher`（不含子目录）。
 
 ### 4.3.1 恢复流程自身的原子性与隔离（v1.0.5，修复 P1-2 / P1-3 / P2-3）
 - **同一事务**：每条 Pending 的“写业务表 + 改 Journal 状态”放进一个 SQLite 事务提交——补提交为 `vault_record` 加 `Commit`；标记丢失为先写 `LostFileNotice` 再 `MarkLost`；回滚只有 `RollBack`。中途崩溃时，要么两步都没发生（下次启动这条仍是 Pending，重新判断），要么两步都完成，不会出现“已有 vault_record 但仍 Pending”（P1-2，重启时撞 `vault_path` UNIQUE 而卡死）或“已 Lost 但没有提示”（P1-3）。`vault_record.vault_path` 与 `lost_file_notice.journal_entry_id` 的唯一约束保留，作为防御。

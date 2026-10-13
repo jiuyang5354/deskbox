@@ -26,6 +26,7 @@ internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders,
     public Dictionary<string, uint> Attributes { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Dirs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public string PublicDesktop { get; set; } = @"C:\Users\Public\Desktop";
+    public string UserDesktop { get; set; } = @"C:\Users\u\Desktop";
     public bool IsDirectory(string path) => Dirs.Contains(path);
     public uint? GetAttributes(string path) =>
         Attributes.TryGetValue(path, out var a) ? a : Files.ContainsKey(path) ? 0x20u : null;
@@ -296,7 +297,7 @@ public class JournaledMoveTests
         var journal = Substitute.For<IJournal>();
         JournalEntry? pending = null;
         await journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
-        var sut = new JournaledMove(new FakeDb(), new RenamingFileMover(fs, fs, fs), journal, fs, Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        var sut = new JournaledMove(new FakeDb(), new RenamingFileMover(fs, fs, fs), journal, fs, fs, Substitute.For<IRecoveryLog>(), TimeProvider.System);
         var job = Guid.NewGuid();
 
         var r = await sut.ExecuteAsync(job, @"C:\d\notes.txt", @"C:\vault\notes.txt");

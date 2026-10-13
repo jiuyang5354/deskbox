@@ -39,7 +39,7 @@ public static class Writer
     public static async Task<int> BeginAsync(string databasePath, string fileId, string goFile)
     {
         var db = new SqliteUnitOfWorkFactory(databasePath);
-        var sut = new JournaledMove(db, new HangingMover(), new SqliteJournal(), new FixedIdentity(fileId), new NoLog(), TimeProvider.System);
+        var sut = new JournaledMove(db, new HangingMover(), new SqliteJournal(), new FixedIdentity(fileId), new NoProbe(), new NoLog(), TimeProvider.System);
         await db.InTransactionAsync(_ => Task.CompletedTask); // 先确认数据库能打开，再等 go
         Console.WriteLine("ready");
         while (!File.Exists(goFile)) await Task.Delay(2);
@@ -49,6 +49,12 @@ public static class Writer
     }
 
     private sealed class FixedIdentity(string id) : IFileIdentity { public string? TryGetFileId(string fullPath) => id; }
+
+    private sealed class NoProbe : IFileSystemProbe
+    {
+        public bool IsDirectory(string path) => false;
+        public uint? GetAttributes(string path) => 0x20;
+    }
 
     private sealed class NoLog : IRecoveryLog
     {
