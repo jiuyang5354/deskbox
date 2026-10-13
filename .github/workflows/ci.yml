@@ -44,6 +44,7 @@ jobs:
       - name: Test with coverage
         run: >
           dotnet test DeskBox.sln -c Release --no-build
+          --filter "Category!=WindowsIntegration"
           --logger trx --results-directory TestResults
           --collect:"XPlat Code Coverage"
 
@@ -54,11 +55,11 @@ jobs:
           reportgenerator -reports:"TestResults/**/coverage.cobertura.xml" -targetdir:coverage -reporttypes:"JsonSummary;MarkdownSummaryGithub"
           Get-Content coverage/SummaryGithub.md >> $env:GITHUB_STEP_SUMMARY
 
-      - name: Coverage gate (Domain >= 90%, Application >= 85%)
+      - name: Coverage gate (Domain >= 90%, Application >= 85%, Infrastructure.Core >= 85%)
         shell: pwsh
         run: |
           $s = Get-Content coverage/Summary.json | ConvertFrom-Json
-          $gates = @{ 'DeskBox.Domain' = 90; 'DeskBox.Application' = 85 }
+          $gates = @{ 'DeskBox.Domain' = 90; 'DeskBox.Application' = 85; 'DeskBox.Infrastructure.Core' = 85 }
           $fail = $false
           foreach ($name in $gates.Keys) {
             $asm = $s.coverage.assemblies | Where-Object { $_.name -eq $name }

@@ -1,0 +1,49 @@
+name: Windows Integration
+
+# 仅手动触发；不是必过检查。用于跑需要真实 Windows 环境的测试（如杀进程测试）。
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-integration:
+    name: windows-integration (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore DeskBox.sln
+
+      - name: Build (Release)
+        run: dotnet build DeskBox.sln -c Release --no-restore
+
+      - name: Test (Category=WindowsIntegration)
+        shell: pwsh
+        run: |
+          # 没有匹配的测试时，VSTest 打印 "No test matches the given testcase filter" 并返回 0；
+          # 部分 SDK/测试平台版本返回 8（零测试），这里同样视为成功。
+          dotnet test DeskBox.sln -c Release --no-build `
+            --filter "Category=WindowsIntegration" `
+            --logger trx --results-directory TestResults
+          $code = $LASTEXITCODE
+          if ($code -eq 8) { Write-Output 'No WindowsIntegration tests matched; treating as success.'; exit 0 }
+          exit $code
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-integration-results
+          path: TestResults/**/*.trx
+          if-no-files-found: warn
