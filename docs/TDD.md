@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.1
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -25,7 +25,8 @@ flowchart TD
 ## 3. 端口接口（Application 层）
 - `IDesktopEnumerator`：枚举用户桌面与公共桌面，变化事件。
 - `IFileIdentity`：卷序列号 + 128 位文件 ID。
-- `IFileMover`：同分区安全移动，返回 `MoveResult`（Moved / Skipped：Locked、ReadOnly、CrossVolume、CloudOnly、NeedsAdmin、NotFound），不覆盖。
+- `IFileMover`：同分区安全移动，返回 `MoveResult`：`Moved(Source, Target, Renamed)` 或 `Skipped(Reason)`，Reason ∈ Locked、ReadOnly、CrossVolume、CloudOnly、NeedsAdmin、NotFound、NameConflict、IoError。
+- `INativeFileMove`：原生不替换移动的抽象（返回 Win32 错误码），使改名算法可在 Linux 上单测。
 - `IJournal`：Pending → Committed / RolledBack 预写日志。
 - `ISnapshotStore`：快照，保留 10 份。
 - `IMonitorService`：显示器指纹、DPI、拔插事件。
@@ -38,9 +39,22 @@ flowchart TD
 - **桌面嵌入**：向 Progman 发 `0x052C` 生成 WorkerW，方框窗口 `SetParent` 到其下；`FWF_NOICONS` 隐藏系统图标，改由 DeskBox 绘制。
 - **Explorer 重启自愈**：每 5 秒巡检 Progman 句柄，变化即重新嵌入。
 - **兜底（P0）**：托盘"临时显示系统桌面图标"；`SafeModePolicy`：连续 2 次启动后 30 秒内崩溃 → 安全模式。崩溃处理器先还原 Explorer 图标再写转储。
-- **文件移动原子性**：写 Journal(Pending) → 移动 → Commit；启动时先恢复 Journal，再嵌入桌面层，最后渲染。
+- **文件移动原子性**：写 Journal(Pending) → 移动 → Commit(实际路径)；启动时先恢复 Journal，再嵌入桌面层，最后渲染。
 - **重命名跟踪**：按 `file_id` 查找记录更新 `file_path`；找不到则从方框移除。
 - **显示器变化**：监听 `WM_DISPLAYCHANGE` / `WM_DPICHANGED`；指纹缺失 → Orphaned → 主屏暂存方框；重现后恢复。
+
+### 4.1 重名改名算法（RenamingFileMover，Application 层）
+1. **不预先检查**目标是否存在（避免检查与移动之间的 TOCTOU 竞争），直接调用 `MoveFileExW(src, dst, 0)`：不带 `MOVEFILE_REPLACE_EXISTING`，也不带 `MOVEFILE_COPY_ALLOWED`（跨卷直接失败）。
+2. 返回 `ERROR_FILE_EXISTS(80)` / `ERROR_ALREADY_EXISTS(183)` 时，依次尝试 `name (n).ext`，n = 2..999（目录不拆扩展名；`.gitignore` 类无主名文件追加在末尾）。
+3. 999 仍冲突 → `Skipped(NameConflict)`。
+4. 错误码映射：32/33 → Locked（**仅此两种**）；2/3 → NotFound；5 → NeedsAdmin；17 → CrossVolume；19 → ReadOnly；362–406（云文件）→ CloudOnly；其余 → IoError。
+5. 成功时 `Moved.Renamed = (n > 1)`，UI 据此提示"已自动改名"。还原到被占用的原路径走同一算法。
+6. `JournaledMove`：Pending 记录意图路径；成功后 `Commit(actualTargetPath)` 记录**实际落盘路径**；跳过则 RollBack。
+
+### 4.2 整理任务状态机修订
+- `Cancel` 只允许在 Classifying（尚未动文件）；Created / Snapshotting / Applying 均不可取消。
+- Applying 中致命错误：Applying →(Fail)→ RollingBack →(RolledBack)→ Failed。
+- 方框状态机（含 Deleted 终态）不变，已被 PM 接受。
 
 ## 5. 线程与性能
 UI 线程只渲染；枚举、规则匹配、IO 走 `Task.Run` + `Channel<T>`。图标 LRU 缓存 512 项；`VirtualizingWrapPanel` 支持 2000+ 文件。空闲无轮询（Explorer 巡检除外）。目标启动 ≤ 1.5 s，空闲内存 ≤ 80 MB。
