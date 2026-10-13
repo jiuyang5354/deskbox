@@ -17,7 +17,8 @@ public sealed class DesktopFsTests : IDisposable
     public void Dispose()
     {
         // 先删联接点本身（不跟随），再删其余内容
-        foreach (var d in Directory.EnumerateDirectories(_root))
+        var opts = new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = 0 };
+        foreach (var d in Directory.GetDirectories(_root, "*", opts))
             if (new DirectoryInfo(d).Attributes.HasFlag(FileAttributes.ReparsePoint)) Directory.Delete(d);
         Directory.Delete(_root, recursive: true);
     }
