@@ -372,6 +372,7 @@ Feature: 右键菜单
     Given 数据库中没有暂存方框
     When 用户删除一个有文件的方框
     Then 提示"数据异常，未删除"，什么都不改
+    And 记一条 `StagingFenceMissing` 错误日志
 
 Feature: 启动自检
   Scenario: 补建缺失的暂存方框
