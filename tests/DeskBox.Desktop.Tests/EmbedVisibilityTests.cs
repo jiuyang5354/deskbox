@@ -1,3 +1,4 @@
+using DeskBox.Domain.Geometry;
 using System.IO;
 using System.Runtime.InteropServices;
 using DeskBox.Application.Desktop;
@@ -27,6 +28,7 @@ public sealed partial class RealDesktopTests
         public IntPtr Parent(IntPtr hwnd) => inner.Parent(hwnd);
         public IntPtr Root(IntPtr hwnd) => inner.Root(hwnd);
         public bool IsWindow(IntPtr hwnd) => inner.IsWindow(hwnd);
+        public ScreenRect WindowRect(IntPtr hwnd) => inner.WindowRect(hwnd);
         public OsVersionInfo OsVersion => inner.OsVersion;
     }
 
@@ -39,7 +41,7 @@ public sealed partial class RealDesktopTests
             mode.Should().Be(EmbedMode.Degraded, "顶层窗口只允许出现在兼容显示");
             Win.GetParent(box).Should().Be(IntPtr.Zero);
             (GetWindowLongPtr(box, -20).ToInt64() & 0x08000000).Should().NotBe(0, "兼容显示必须带 WS_EX_NOACTIVATE");
-            Win32DesktopWindowing.IsPinned(box).Should().BeTrue("兼容显示必须钉在最底");
+            Win32DesktopWindowing.Pinned.IsPinned(box).Should().BeTrue("兼容显示必须钉在最底");
         }
         else
         {
