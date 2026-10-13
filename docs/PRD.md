@@ -1,6 +1,6 @@
-# 《DeskBox 桌面收纳》PRD v1.2.1
+# 《DeskBox 桌面收纳》PRD v1.2.2
 
-> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订。
+> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost。
 
 ## 1. 背景与目标
 Windows 用户的桌面常堆满快捷方式、截图和临时文件。DeskBox 要做到：
@@ -88,17 +88,36 @@ stateDiagram-v2
 | | conditions | — | 扩展名、关键字、正则（100 ms 超时视为不匹配）、修改时间范围 |
 | snapshot | trigger | enum | Manual / Auto / BeforeRestore；保留最近 10 份 |
 | vault_record | original_path / vault_path / file_id | — | 原路径 ≠ 收纳路径；只能还原一次 |
-| journal | status | enum | Pending → Committed / RolledBack |
+| journal | status | enum | Pending → Committed / RolledBack / **Lost**（v1.2.2） |
 | | actual_target_path | string | Commit 时写入实际落盘路径（自动改名后可能带 " (n)"） |
+| | file_id | string | Begin 时记录，恢复时按 file_id 判断回滚 / 补提交 / 在收纳库查找 / 标记 Lost（v1.2.2） |
+| | recovery_failures | int | ≥ 0，默认 0；启动恢复该条失败一次 +1。**连续 3 次启动恢复失败 → 转为 Lost 并触发 Lost 提示**；失败计数、提示记录和 MarkLost 在**同一个事务**中提交（v1.2.2） |
+| lost_file_notice | entry_id / file_name / acknowledged | — | 按 entry_id 去重；先写提示再 MarkLost，同一事务提交；用户点"知道了"后 acknowledged=1（v1.2.2） |
 
 内置规则：快捷方式（.lnk/.url）、截图（png/jpg 且文件名含 Screenshot/截图/屏幕截图）、图片、文档、压缩包、安装包（exe/msi）、文件夹、其他（未命中）。
 
 日志中文件路径只记哈希 + 文件名。
 
+**跳过原因用户文案（v1.2.2）**：界面只显示下列文案，不显示枚举名；资源键就是 `Strings.resx` 中的枚举名本身（不加前缀），`SkipReasonText` 按 `reason.ToString()` 查找。
+
+| 枚举 | Strings.resx 键 | 用户文案 |
+|---|---|---|
+| Locked | Locked | 文件正被其他程序使用 |
+| CloudOnly | CloudOnly | 这是 OneDrive 云端文件，还没下载到本机 |
+| NeedsAdmin | NeedsAdmin | 公共桌面上的文件需要管理员权限 |
+| NotFound | NotFound | 文件已被删除或移走 |
+| CrossVolume | CrossVolume | 收纳库和桌面不在同一个磁盘上 |
+| ReadOnly | ReadOnly | 磁盘处于写保护状态 |
+| NameConflict | NameConflict | 同名文件太多，无法自动改名 |
+| IoError | IoError | 未知错误，详情见日志 |
+
+**Lost 提示（v1.2.2）**：原文为"有 {count} 个文件在上次整理中断后没能找回：{fileNames}。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。"（count 与文件名为变量，示例："有 1 个文件在上次整理中断后没能找回：notes.txt。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。"）。启动时弹窗显示一次；之后常驻在 **设置 > 整理记录**，直到用户点击"知道了"。
+
 ## 5. 边界与异常矩阵
 | 场景 | 处理 |
 |---|---|
 | 目标重名 | 绝不覆盖。自动改名为 `name (n).ext`（n 从 2 到 999 依次尝试，不预先检查是否存在，以移动操作本身的"已存在"错误为准，防止竞争）；界面提示"已自动改名"；999 个名字都被占用则跳过（NameConflict）并提示 |
+| 文件名末尾带点或空格（如 `report. `） | 生成改名目标时**先去掉名字末尾的点和空格，再拆扩展名**：`report. ` → `report (2)`；访问源文件时仍使用原名（v1.2.2） |
 | 还原时原路径已被占用 | 同样自动改名为 `name (n).ext`，提示"已自动改名"，不覆盖新文件 |
 | 文件被占用（共享冲突 / 锁冲突） | 跳过（Locked），其余文件继续 |
 | 只读介质 / 需管理员 | 跳过（ReadOnly / NeedsAdmin） |
@@ -109,7 +128,8 @@ stateDiagram-v2
 | OneDrive 仅云端文件 | 跳过（CloudOnly） |
 | 文件已被删除 | 跳过（NotFound），并从方框移除 |
 | 系统图标（此电脑、回收站） | 不移动，只映射 |
-| 整理中途崩溃 | 启动时先按 Journal 恢复 Pending 条目 |
+| 整理中途崩溃 | 启动时先按 Journal 恢复 Pending 条目；每条单独处理，一条出错不影响其他条；同一条连续 3 次启动恢复失败 → 转为 Lost 并弹出 Lost 提示（v1.2.2） |
+| 恢复时文件按 file_id 找不到 | 标记为 Lost，弹出 Lost 提示（v1.2.2） |
 | Explorer 重启 | 自动重新嵌入桌面层 |
 | 显示器拔出 | 方框 → Orphaned，图标进主屏暂存方框；插回后恢复 |
 | **DeskBox 崩溃导致桌面为空（P0）** | 托盘提供"临时显示系统桌面图标"应急开关；**连续 2 次在启动后 30 秒内崩溃 → 自动进入安全模式**（不接管图标）并提示用户 |
@@ -168,12 +188,20 @@ Feature: 一键整理
   Scenario: 重名名额用尽
     Given 收纳库中 "notes.txt" 到 "notes (999).txt" 均已存在
     When 用户移入 "notes.txt"
-    Then 该文件被跳过，原因为 NameConflict，并提示用户
+    Then 该文件被跳过，原因为 NameConflict，并提示"同名文件太多，无法自动改名"
+
+  Scenario: 文件名末尾带点和空格时改名
+    Given 收纳库中已存在 "report"
+    And 桌面上有一个名为 "report. " 的文件
+    When 用户把它移入收纳库
+    Then 它被保存为收纳库中的 "report (2)"
+    And 读取源文件时使用原名 "report. "
+    And 界面提示"已自动改名"
 
   Scenario: 被占用的文件被跳过
     Given 桌面上的 "report.docx" 正被 Word 独占打开
     When 用户把它移入收纳库
-    Then 该文件被跳过并提示"文件正在被占用"
+    Then 该文件被跳过并提示"文件正被其他程序使用"
     And 其余文件照常处理
 
 Feature: 实时收纳
@@ -207,6 +235,23 @@ Feature: 一键还原
     Given 桌面上已有一个新的 "notes.txt"
     When 用户把收纳库里的 "notes.txt" 还原到桌面
     Then 它被还原为 "notes (2).txt"，新文件不变，并提示"已自动改名"
+
+Feature: 崩溃恢复
+  Scenario: 连续 3 次恢复失败转为 Lost
+    Given Journal 中有一条 Pending 记录，文件为 "notes.txt"
+    And 该记录已在连续 2 次启动中恢复失败
+    When 第 3 次启动时该记录再次恢复失败
+    Then 该记录状态变为 Lost
+    And 失败计数、提示记录和 MarkLost 在同一个事务中提交
+    And 启动时弹出提示"有 1 个文件在上次整理中断后没能找回：notes.txt。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。"
+
+  Scenario: Lost 提示常驻直到确认
+    Given 已弹出过一次 Lost 提示
+    When 用户再次启动 DeskBox
+    Then 不再弹窗
+    And 该提示仍显示在"设置 > 整理记录"中
+    When 用户点击"知道了"
+    Then 该提示不再显示
 
 Feature: 安全模式
   Scenario: 连续早期崩溃
