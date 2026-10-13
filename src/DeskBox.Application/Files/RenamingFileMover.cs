@@ -7,7 +7,7 @@ namespace DeskBox.Application.Files;
 /// 安全移动：不预先检查目标是否存在（避免 TOCTOU 竞争），直接做不替换移动；
 /// 目标已存在则依次尝试 "name (n).ext"（n=2..999），用尽返回 Skipped(NameConflict)。
 /// </summary>
-/// 预检查（不调用原生移动）：仅云端文件 → CloudOnly；位于公共桌面 → NeedsAdmin。
+/// 预检查（不调用原生移动）：仅云端文件 → CloudOnly；位于公共桌面（两侧路径规范化后比较）→ NeedsAdmin。
 public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe probe, IKnownFolders folders) : IFileMover
 {
     public Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default)
@@ -38,13 +38,19 @@ public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe p
         return new MoveResult.Skipped(source, SkipReason.NameConflict, Win32Errors.AlreadyExists);
     }
 
+    /// <summary>
+    /// 判断 path 是否位于 folder 之下：两侧都先经 <see cref="Win32PathNormalizer"/>
+    /// （统一 "\\?\" / UNC 前缀、"/" 分隔符、重复分隔符、"." / ".."），再做不区分大小写的前缀比较，
+    /// 且要求前缀后紧跟分隔符，避免 Desktopx 这类兄弟目录误判。任一侧无法规范化则视为不在其下。
+    /// </summary>
     internal static bool IsUnder(string path, string folder)
     {
-        if (string.IsNullOrWhiteSpace(folder)) return false;
-        var root = folder.TrimEnd('\\', '/');
-        return path.Length > root.Length + 1
-            && path.StartsWith(root, StringComparison.OrdinalIgnoreCase)
-            && path[root.Length] is '\\' or '/';
+        if (!Win32PathNormalizer.TryNormalize(path, out var p) || !Win32PathNormalizer.TryNormalize(folder, out var f))
+            return false;
+        var root = f.TrimEnd('\\');
+        return p.Length > root.Length + 1
+            && p.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+            && p[root.Length] == '\\';
     }
 
     internal static SkipReason Map(int error) => error switch

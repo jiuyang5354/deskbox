@@ -11,7 +11,7 @@ internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders
 {
     public Dictionary<string, uint> Attributes { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Dirs { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public string PublicDesktop { get; set; } = "/public/desktop";
+    public string PublicDesktop { get; set; } = @"C:\Users\Public\Desktop";
     public bool IsDirectory(string path) => Dirs.Contains(path);
     public uint? GetAttributes(string path) =>
         Attributes.TryGetValue(path, out var a) ? a : Files.ContainsKey(path) ? 0x20u : null;
@@ -166,18 +166,34 @@ public class RenamingFileMoverTests
     public async Task Public_desktop_item_skips_needs_admin_without_native_move()
     {
         var native = Substitute.For<INativeFileMove>();
-        (await With(native).MoveAsync("/PUBLIC/Desktop/app.lnk", Dst))
-            .Should().Be(new MoveResult.Skipped("/PUBLIC/Desktop/app.lnk", SkipReason.NeedsAdmin));
+        (await With(native).MoveAsync(@"c:\users\PUBLIC\desktop\app.lnk", Dst))
+            .Should().Be(new MoveResult.Skipped(@"c:\users\PUBLIC\desktop\app.lnk", SkipReason.NeedsAdmin));
         native.DidNotReceiveWithAnyArgs().Move(default!, default!);
     }
 
     [Theory]
-    [InlineData("/public/desktop/a.lnk", "/public/desktop", true)]
-    [InlineData("/public/desktop/a.lnk", "/public/desktop/", true)]
-    [InlineData("/public/desktopx/a.lnk", "/public/desktop", false)]
-    [InlineData("/public/desktop", "/public/desktop", false)]
-    [InlineData("/public/desktop/a.lnk", "", false)]
     [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"c:\users\public\DESKTOP\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop\", true)]
+    [InlineData(@"C:/Users/Public/Desktop/a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\\sub\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\..\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"\\?\C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"\\?\C:\Users\Public\Desktop", true)]
+    [InlineData(@"\\fs\home\Public\Desktop\a.lnk", @"\\FS\home\Public\Desktop", true)]
+    [InlineData(@"//fs/home/Public/Desktop/a.lnk", @"\\fs\home\Public\Desktop", true)]
+    [InlineData(@"\\?\UNC\fs\home\Public\Desktop\a.lnk", @"\\fs\home\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktopx\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop.old\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"\\?\C:\Users\Public\Desktopx\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop\..\Documents\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop\", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"D:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"\\fs\other\Public\Desktop\a.lnk", @"\\fs\home\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", "", false)]
+    [InlineData(@"Desktop\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData("/public/desktop/a.lnk", "/public/desktop", false)]
     public void Is_under(string path, string folder, bool expected) =>
         RenamingFileMover.IsUnder(path, folder).Should().Be(expected);
 
