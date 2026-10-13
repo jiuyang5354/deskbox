@@ -9,8 +9,8 @@ namespace DeskBox.Application.Files;
 /// <list type="number">
 /// <item>先按属性位判断仅云端文件 → Skipped(CloudOnly)，不打开文件。</item>
 /// <item>Begin：读取源文件 file_id，同一 BEGIN IMMEDIATE 事务里查重并写 Pending（读不到 file_id 则不移动，返回 NotFound；已有 Pending 返回 AlreadyInProgress）。</item>
-/// <item>每次 MoveFileExW 之前把候选目标写入 Pending（重试时更新）。</item>
-/// <item>成功 → Commit(实际路径)；跳过 → RollBack(原因)。</item>
+/// <item>每次 MoveFileExW 之前把候选目标写入 Pending 并提交（重试时更新）。Pending 行在 MoveFileExW 之前已提交落盘；MoveFileExW 本身在任何事务之外执行。</item>
+/// <item>成功 → 标记完成（journal status Pending→Committed，记录实际路径，在移动之后的独立事务中）；跳过 → 独立事务中 RollBack(原因)。移动后、标记完成前崩溃由 JournalRecovery 按 file_id 在候选处补做。</item>
 /// <item>取消或异常（含探测异常）：能证明未移动（尚未发起尝试，或源文件 file_id 仍在原处而候选处不是它）→ 立即 RollBack；
 /// 无法证明 → 保留 Pending 交给启动恢复，并写结构化日志。异常继续抛出。</item>
 /// </list>

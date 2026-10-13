@@ -146,18 +146,20 @@ public sealed class DesktopFsTests : IDisposable
         new Win32NativeFileMove().Move(Path.Combine(_root, "missing.txt"), Path.Combine(_root, "x.txt")).Should().Be(Win32Errors.FileNotFound);
     }
 
-    [WindowsFact]
+    [SkippableFact]
     public void Cross_volume_move_fails_with_17_and_does_not_copy()
     {
-        if (OperatingSystem.IsWindows()) CrossVolumeWindows();
+        Skip.IfNot(OperatingSystem.IsWindows(), "需要 Windows");
+        // GitHub windows-2022：TEMP 在 C:，工作区在 D:
+        var other = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE");
+        Skip.If(other is null || string.Equals(Path.GetPathRoot(other), Path.GetPathRoot(_root), StringComparison.OrdinalIgnoreCase),
+            $"没有第二个卷可测（TEMP={Path.GetPathRoot(_root)}, GITHUB_WORKSPACE={other ?? "<unset>"}）");
+        if (OperatingSystem.IsWindows()) CrossVolumeWindows(other!);
     }
 
     [SupportedOSPlatform("windows")]
-    private void CrossVolumeWindows()
+    private void CrossVolumeWindows(string other)
     {
-        // GitHub windows-2022：TEMP 在 C:，工作区在 D:。只有一个卷时没有可测的跨卷场景
-        var other = Environment.GetEnvironmentVariable("GITHUB_WORKSPACE");
-        if (other is null || string.Equals(Path.GetPathRoot(other), Path.GetPathRoot(_root), StringComparison.OrdinalIgnoreCase)) return;
         var src = Path.Combine(_root, "x.txt");
         File.WriteAllText(src, "x");
         var dst = Path.Combine(other, $"deskbox-xvol-{Guid.NewGuid():N}.txt");

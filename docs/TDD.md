@@ -101,7 +101,12 @@ flowchart TD
 - `WindowsDirectoryLister`（Infrastructure.Core）：以 `FILE_LIST_DIRECTORY | FILE_FLAG_BACKUP_SEMANTICS` 打开**目录**句柄，`GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` 一次取名字 / 属性 / 128 位 file_id / 修改时间，**不打开任何子项**、不跟随联接点 / 符号链接目录（它们作为项列出，`IsReparsePoint=true`）。路径经 `Win32PathNormalizer`（`\\?\` 前缀）。
 - 云端文件：仅凭属性位 `RECALL_ON_DATA_ACCESS(0x400000) | RECALL_ON_OPEN(0x40000) | OFFLINE(0x1000)` 判定；`JournaledMove` 在读取 file_id（会打开文件）之前先检查，命中直接 `Skipped(CloudOnly)`，不写 Journal。
 - 占用：不预先打开探测，由 `MoveFileExW` 返回 32 / 33 映射为 `Locked`；跨分区 17 → `CrossVolume`，不带 `MOVEFILE_COPY_ALLOWED`、不重试。
-- 顺序不变：`BEGIN IMMEDIATE` 内查重 + 写 Pending → 写候选 → `MoveFileExW` → Commit / RollBack。
+- 顺序不变：
+  1. 事务 1（`BEGIN IMMEDIATE`）：查重 + 插入 Pending，**提交**；
+  2. 每次尝试前，事务 2：写入候选路径，**提交**；
+  3. `MoveFileExW`——**在任何事务之外执行**，此时 Pending 行（含候选路径）已经落盘；
+  4. 标记完成（journal status Pending→Committed，在移动之后的独立事务中）；跳过则在独立事务中 Pending→RolledBack。
+  若进程在第 3 步之后、第 4 步之前崩溃，启动恢复按 file_id 在候选路径找到文件并补做标记完成（见 4.3；测试 `CrashAfterMoveTests`）。
 - 监听：`FileSystemDirectoryWatcher`（不含子目录）。
 
 ### 4.3.1 恢复流程自身的原子性与隔离（v1.0.5，修复 P1-2 / P1-3 / P2-3）
