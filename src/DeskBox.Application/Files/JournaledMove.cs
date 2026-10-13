@@ -14,7 +14,7 @@ namespace DeskBox.Application.Files;
 /// 无法证明 → 保留 Pending 交给启动恢复，并写结构化日志。异常继续抛出。</item>
 /// </list>
 /// </summary>
-public sealed class JournaledMove(IFileMover mover, IJournal journal, IFileIdentity identity, IRecoveryLog log, TimeProvider clock)
+public sealed class JournaledMove(IUnitOfWorkFactory db, IFileMover mover, IJournal journal, IFileIdentity identity, IRecoveryLog log, TimeProvider clock)
 {
     public async Task<MoveResult> ExecuteAsync(Guid jobId, string source, string target, CancellationToken ct = default)
     {
@@ -22,7 +22,7 @@ public sealed class JournaledMove(IFileMover mover, IJournal journal, IFileIdent
         if (fileId is null) return new MoveResult.Skipped(source, SkipReason.NotFound);
 
         var entry = new JournalEntry(Guid.NewGuid(), jobId, fileId, source, target, clock.GetUtcNow());
-        await journal.AppendPendingAsync(entry, ct);
+        await db.InTransactionAsync(u => journal.AppendPendingAsync(u, entry, ct), ct);
 
         var attemptStarted = false;
         MoveResult result;
@@ -31,7 +31,7 @@ public sealed class JournaledMove(IFileMover mover, IJournal journal, IFileIdent
             result = await mover.MoveAsync(source, target, async (candidate, c) =>
             {
                 entry.BeginAttempt(candidate);
-                await journal.UpdateCandidateAsync(entry.Id, candidate, entry.Attempt, c);
+                await db.InTransactionAsync(u => journal.UpdateCandidateAsync(u, entry.Id, candidate, entry.Attempt, c), c);
                 attemptStarted = true;
             }, ct);
         }
@@ -41,8 +41,8 @@ public sealed class JournaledMove(IFileMover mover, IJournal journal, IFileIdent
             throw;
         }
 
-        if (result is MoveResult.Moved moved) await journal.CommitAsync(entry.Id, moved.TargetPath, ct);
-        else if (result is MoveResult.Skipped skipped) await journal.RollBackAsync(entry.Id, skipped.AbortReason, ct);
+        if (result is MoveResult.Moved moved) await db.InTransactionAsync(u => journal.CommitAsync(u, entry.Id, moved.TargetPath, ct), ct);
+        else if (result is MoveResult.Skipped skipped) await db.InTransactionAsync(u => journal.RollBackAsync(u, entry.Id, skipped.AbortReason, ct), ct);
         return result;
     }
 
@@ -51,17 +51,20 @@ public sealed class JournaledMove(IFileMover mover, IJournal journal, IFileIdent
         var kind = ex is OperationCanceledException ? "Cancelled" : $"Interrupted ({ex.GetType().Name})";
         if (!attemptStarted)
         {
-            await journal.RollBackAsync(entry.Id, kind, CancellationToken.None);
+            await RollBackAsync(entry.Id, kind);
             return;
         }
         if (Matches(entry.SourcePath, entry.FileId) && !Matches(entry.TargetPath, entry.FileId))
         {
-            await journal.RollBackAsync(entry.Id, kind + ", verified not moved", CancellationToken.None);
+            await RollBackAsync(entry.Id, kind + ", verified not moved");
             return;
         }
         log.UncertainPending(new UncertainPendingEvent(entry.Id, entry.JobId, entry.FileId, entry.SourcePath,
             entry.TargetPath, entry.Attempt, ex.GetType().Name, ex.Message));
     }
+
+    private Task RollBackAsync(Guid id, string reason) =>
+        db.InTransactionAsync(u => journal.RollBackAsync(u, id, reason, CancellationToken.None), CancellationToken.None);
 
     private bool Matches(string path, string fileId)
     {

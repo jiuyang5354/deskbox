@@ -8,42 +8,6 @@ using NSubstitute;
 
 namespace DeskBox.Domain.Tests;
 
-/// <summary>内存 Journal。Frozen 后忽略一切写入，模拟进程被杀时磁盘上留下的状态。</summary>
-internal sealed class InMemoryJournal : IJournal
-{
-    public Dictionary<Guid, JournalEntry> Entries { get; } = [];
-    public bool Frozen { get; set; }
-
-    public Task AppendPendingAsync(JournalEntry entry, CancellationToken ct = default) => Write(() => Entries[entry.Id] = entry);
-
-    // 候选路径已经由调用方写到 entry 上（同一对象）；这里只校验持久化顺序
-    public Task UpdateCandidateAsync(Guid entryId, string candidatePath, int attempt, CancellationToken ct = default) =>
-        Write(() => Entries[entryId].TargetPath.Should().Be(candidatePath));
-
-    public Task CommitAsync(Guid entryId, string actualTargetPath, CancellationToken ct = default) => Write(() => Entries[entryId].Commit(actualTargetPath));
-    public Task RollBackAsync(Guid entryId, string abortReason, CancellationToken ct = default) => Write(() => Entries[entryId].RollBack(abortReason));
-    public Task MarkLostAsync(Guid entryId, CancellationToken ct = default) => Write(() => Entries[entryId].MarkLost());
-
-    public Task<IReadOnlyList<JournalEntry>> GetPendingAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<JournalEntry>>(Entries.Values.Where(e => e.Status == JournalStatus.Pending).ToList());
-
-    private Task Write(Action a)
-    {
-        if (!Frozen) a();
-        return Task.CompletedTask;
-    }
-}
-
-internal sealed class InMemoryNotices : ILostFileNoticeStore
-{
-    public List<LostFileNotice> All { get; } = [];
-    public int Saves { get; private set; }
-    public Task AddAsync(LostFileNotice notice, CancellationToken ct = default) { All.Add(notice); return Task.CompletedTask; }
-    public Task<IReadOnlyList<LostFileNotice>> GetUnacknowledgedAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<LostFileNotice>>(All.Where(n => !n.IsAcknowledged).ToList());
-    public Task SaveAsync(LostFileNotice notice, CancellationToken ct = default) { Saves++; return Task.CompletedTask; }
-}
-
 public class JournalRecoveryTests
 {
     private const string IdA = "1a2b3c4d:000000000000000000000000000000aa";
@@ -54,11 +18,14 @@ public class JournalRecoveryTests
     private readonly FakeFs _fs = new();
     private readonly InMemoryJournal _journal = new();
     private readonly InMemoryNotices _notices = new();
-    private readonly IVaultRecordStore _records = Substitute.For<IVaultRecordStore>();
+    private readonly InMemoryVaultRecords _records = new();
+    private readonly FakeDb _db = new();
     private readonly IRecoveryLog _log = Substitute.For<IRecoveryLog>();
 
-    private JournaledMove Move() => new(new RenamingFileMover(_fs, _fs, _fs), _journal, _fs, _log, TimeProvider.System);
-    private JournalRecovery Recovery() => new(_journal, _fs, _fs, _records, _notices, TimeProvider.System);
+    private JournaledMove Move() => new(_db, new RenamingFileMover(_fs, _fs, _fs), _journal, _fs, _log, TimeProvider.System);
+    private JournalRecovery Recovery() => new(_db, _journal, _fs, _fs, _records, _notices, _log, TimeProvider.System);
+    private Task Seed(JournalEntry e) => _db.InTransactionAsync(u => _journal.AppendPendingAsync(u, e));
+    private LostFileNotices Notices() => new(_db, _notices, TimeProvider.System);
 
     private void Occupy(int upTo)
     {
@@ -94,14 +61,14 @@ public class JournalRecoveryTests
         Occupy(attempt - 1);
         _fs.KillAtAttempt = attempt;
         _fs.KillAfterMove = afterMove;
-        _fs.OnKill = () => _journal.Frozen = true;
+        _fs.OnKill = () => _db.Dead = true;
 
         await FluentActions.Awaiting(() => Move().ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<KilledException>();
         var pending = _journal.Entries.Values.Single();
         pending.Status.Should().Be(JournalStatus.Pending);
         (pending.TargetPath, pending.Attempt).Should().Be((Candidate(attempt), attempt));
 
-        _journal.Frozen = false; // 重启
+        _db.Restart(); // 重启
         var result = (await Recovery().RecoverAsync()).Single();
 
         if (afterMove)
@@ -109,15 +76,15 @@ public class JournalRecoveryTests
             result.Should().Be(new RecoveredEntry(pending.Id, RecoveryOutcome.CommittedAtCandidate, Candidate(attempt)));
             pending.Status.Should().Be(JournalStatus.Committed);
             pending.ActualTargetPath.Should().Be(Candidate(attempt));
-            await _records.Received(1).AddAsync(Arg.Is<VaultRecord>(v =>
-                v.OriginalPath == Src && v.VaultPath == Candidate(attempt) && v.FileId == IdA.ToUpperInvariant()), Arg.Any<CancellationToken>());
+            _records.All.Should().ContainSingle(v =>
+                v.OriginalPath == Src && v.VaultPath == Candidate(attempt) && v.FileId == IdA.ToUpperInvariant());
         }
         else
         {
             result.Outcome.Should().Be(RecoveryOutcome.Aborted);
             pending.Status.Should().Be(JournalStatus.RolledBack);
             _fs.Files[Src].Should().Be(IdA);
-            await _records.DidNotReceiveWithAnyArgs().AddAsync(default!);
+            _records.All.Should().BeEmpty();
         }
         // 已占位的同名文件都没有被改动
         for (var k = 1; k < attempt; k++) _fs.Files[Candidate(k)].Should().Be(IdOther);
@@ -129,7 +96,7 @@ public class JournalRecoveryTests
     {
         // 候选路径上是别人的同名文件，我们的文件在收纳库另一处（例如候选更新未落盘）
         var e = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, Src, Dst, default);
-        await _journal.AppendPendingAsync(e);
+        await Seed(e);
         _fs.Files[Dst] = IdOther;
         _fs.Files[@"C:\vault\sub\notes (7).txt"] = IdA;
 
@@ -137,30 +104,30 @@ public class JournalRecoveryTests
 
         r.Should().Be(new RecoveredEntry(e.Id, RecoveryOutcome.CommittedFromVaultScan, @"C:\vault\sub\notes (7).txt"));
         e.ActualTargetPath.Should().Be(@"C:\vault\sub\notes (7).txt");
-        await _records.Received(1).AddAsync(Arg.Is<VaultRecord>(v => v.VaultPath == @"C:\vault\sub\notes (7).txt"), Arg.Any<CancellationToken>());
+        _records.All.Should().ContainSingle(v => v.VaultPath == @"C:\vault\sub\notes (7).txt");
     }
 
     [Fact]
     public async Task Not_found_anywhere_marks_lost_with_persistent_notice_until_acknowledged()
     {
         var e = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"C:\Users\u\Desktop\notes.txt", Dst, default);
-        await _journal.AppendPendingAsync(e);
+        await Seed(e);
         _fs.Files[Dst] = IdOther; // 同名但不是它
 
         (await Recovery().RecoverAsync()).Single().Outcome.Should().Be(RecoveryOutcome.Lost);
         e.Status.Should().Be(JournalStatus.Lost);
         _notices.All.Should().ContainSingle().Which.FileName.Should().Be("notes.txt");
-        await _records.DidNotReceiveWithAnyArgs().AddAsync(default!);
+        _records.All.Should().BeEmpty();
 
         const string expected = "有 1 个文件在上次整理中断后没能找回：notes.txt。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。";
         // 两次"重启"都仍然提示
-        (await new LostFileNotices(_notices, TimeProvider.System).GetMessageAsync()).Should().Be(expected);
-        (await new LostFileNotices(_notices, TimeProvider.System).GetMessageAsync(CultureInfo.GetCultureInfo("zh-CN"))).Should().Be(expected);
+        (await Notices().GetMessageAsync()).Should().Be(expected);
+        (await Notices().GetMessageAsync(CultureInfo.GetCultureInfo("zh-CN"))).Should().Be(expected);
         (await Recovery().RecoverAsync()).Should().BeEmpty();
 
-        await new LostFileNotices(_notices, TimeProvider.System).AcknowledgeAllAsync();
+        await Notices().AcknowledgeAllAsync();
         _notices.Saves.Should().Be(1);
-        (await new LostFileNotices(_notices, TimeProvider.System).GetMessageAsync()).Should().BeNull();
+        (await Notices().GetMessageAsync()).Should().BeNull();
     }
 
     [Fact]
@@ -198,9 +165,9 @@ public class JournalRecoveryTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         var journal = Substitute.For<IJournal>();
-        var sut = new JournaledMove(new RenamingFileMover(_fs, _fs, _fs), journal, _fs, _log, TimeProvider.System);
+        var sut = new JournaledMove(_db, new RenamingFileMover(_fs, _fs, _fs), journal, _fs, _log, TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst, cts.Token)).Should().ThrowAsync<OperationCanceledException>();
-        await journal.Received(1).RollBackAsync(Arg.Any<Guid>(), "Cancelled", CancellationToken.None);
+        await journal.Received(1).RollBackAsync(Arg.Any<IUnitOfWork>(), Arg.Any<Guid>(), "Cancelled", CancellationToken.None);
         _fs.Attempts.Should().BeEmpty();
     }
 
@@ -210,7 +177,7 @@ public class JournalRecoveryTests
         _fs.Files[Src] = IdA;
         var probe = Substitute.For<IFileSystemProbe>();
         probe.GetAttributes(Src).Returns(_ => throw new UnauthorizedAccessException("denied"));
-        var sut = new JournaledMove(new RenamingFileMover(_fs, probe, _fs), _journal, _fs, _log, TimeProvider.System);
+        var sut = new JournaledMove(_db, new RenamingFileMover(_fs, probe, _fs), _journal, _fs, _log, TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<UnauthorizedAccessException>();
         var e = _journal.Entries.Values.Single();
         (e.Status, e.AbortReason).Should().Be((JournalStatus.RolledBack, "Interrupted (UnauthorizedAccessException)"));
@@ -254,7 +221,7 @@ public class JournalRecoveryTests
         identity.TryGetFileId(Src).Returns(_ => ++calls == 1 ? IdA : throw new IOException("busy"));
         var native = Substitute.For<INativeFileMove>();
         native.Move(Src, Dst).Returns(_ => throw new InvalidOperationException("boom"));
-        var sut = new JournaledMove(new RenamingFileMover(native, _fs, _fs), _journal, identity, _log, TimeProvider.System);
+        var sut = new JournaledMove(_db, new RenamingFileMover(native, _fs, _fs), _journal, identity, _log, TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<InvalidOperationException>();
         _journal.Entries.Values.Single().Status.Should().Be(JournalStatus.Pending);
         _log.ReceivedWithAnyArgs(1).UncertainPending(default!);

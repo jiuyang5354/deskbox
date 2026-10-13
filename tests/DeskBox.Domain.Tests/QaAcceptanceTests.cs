@@ -41,9 +41,9 @@ public class QaAcceptanceTests
         n.Move(Src, Arg.Is<string>(s => s.EndsWith("notes (2).txt"))).Returns(Win32Errors.Success);
         var journal = Substitute.For<IJournal>();
         JournalEntry? pending = null;
-        journal.AppendPendingAsync(Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
-        journal.CommitAsync(default, default!, default).ReturnsForAnyArgs<Task>(_ => throw new IOException("模拟崩溃：Commit 前进程被杀"));
-        var jm = new JournaledMove(m, journal, Identity(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
+        journal.CommitAsync(default!, default, default!, default).ReturnsForAnyArgs<Task>(_ => throw new IOException("模拟崩溃：Commit 前进程被杀"));
+        var jm = new JournaledMove(new FakeDb(), m, journal, Identity(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
         await FluentActions.Awaiting(() => jm.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<IOException>();
         // 文件实际落在 notes (2).txt，但磁盘上能留给恢复逻辑的只有这条 Pending：
         // 它必须带 file_id，且在调用 MoveFileExW 之前已持久化了候选路径
@@ -53,9 +53,9 @@ public class QaAcceptanceTests
         pending.Attempt.Should().Be(2);
         Received.InOrder(() =>
         {
-            journal.UpdateCandidateAsync(pending.Id, Dst, 1, Arg.Any<CancellationToken>());
+            journal.UpdateCandidateAsync(Arg.Any<IUnitOfWork>(), pending.Id, Dst, 1, Arg.Any<CancellationToken>());
             n.Move(Src, Dst);
-            journal.UpdateCandidateAsync(pending.Id, Arg.Is<string>(s => s.EndsWith("notes (2).txt")), 2, Arg.Any<CancellationToken>());
+            journal.UpdateCandidateAsync(Arg.Any<IUnitOfWork>(), pending.Id, Arg.Is<string>(s => s.EndsWith("notes (2).txt")), 2, Arg.Any<CancellationToken>());
             n.Move(Src, Arg.Is<string>(s => s.EndsWith("notes (2).txt")));
         });
     }
@@ -67,10 +67,10 @@ public class QaAcceptanceTests
         var (m, n) = Mover();
         var journal = Substitute.For<IJournal>();
         using var cts = new CancellationTokenSource();
-        journal.AppendPendingAsync(Arg.Any<JournalEntry>(), Arg.Any<CancellationToken>()).Returns(_ => { cts.Cancel(); return Task.CompletedTask; });
-        var jm = new JournaledMove(m, journal, Identity(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Any<JournalEntry>(), Arg.Any<CancellationToken>()).Returns(_ => { cts.Cancel(); return Task.CompletedTask; });
+        var jm = new JournaledMove(new FakeDb(), m, journal, Identity(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
         await FluentActions.Awaiting(() => jm.ExecuteAsync(Guid.NewGuid(), Src, Dst, cts.Token)).Should().ThrowAsync<OperationCanceledException>();
-        await journal.ReceivedWithAnyArgs(1).RollBackAsync(default, default!, default);
+        await journal.ReceivedWithAnyArgs(1).RollBackAsync(default!, default, default!, default);
     }
 
     // QA-03 尾随空格/点：先剥掉末尾点和空格再拆扩展名（PRD v1.2.2）

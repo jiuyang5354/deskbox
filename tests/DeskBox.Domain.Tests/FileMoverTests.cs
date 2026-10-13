@@ -12,7 +12,10 @@ internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders,
 {
     /// <summary>文件内容即 file_id（格式合法时）。</summary>
     public string? TryGetFileId(string fullPath) =>
+        Broken.Contains(fullPath) ? throw new IOException("设备未就绪") :
         Files.TryGetValue(fullPath, out var v) && FenceItem.IsValidFileId(v) ? v : null;
+    /// <summary>读取 file_id 时抛 IOException 的路径。</summary>
+    public HashSet<string> Broken { get; } = new(StringComparer.OrdinalIgnoreCase);
     public string VaultRoot { get; set; } = @"C:\vault\";
     public IEnumerable<string> EnumerateFiles() => Files.Keys.Where(k => k.StartsWith(VaultRoot, StringComparison.OrdinalIgnoreCase)).ToList();
     /// <summary>模拟进程被杀：在第 KillAtAttempt 次尝试的移动之前/之后抛出 KilledException。</summary>
@@ -292,15 +295,15 @@ public class JournaledMoveTests
         fs.Files[@"C:\vault\notes.txt"] = "o";
         var journal = Substitute.For<IJournal>();
         JournalEntry? pending = null;
-        await journal.AppendPendingAsync(Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
-        var sut = new JournaledMove(new RenamingFileMover(fs, fs, fs), journal, fs, Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        await journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
+        var sut = new JournaledMove(new FakeDb(), new RenamingFileMover(fs, fs, fs), journal, fs, Substitute.For<IRecoveryLog>(), TimeProvider.System);
         var job = Guid.NewGuid();
 
         var r = await sut.ExecuteAsync(job, @"C:\d\notes.txt", @"C:\vault\notes.txt");
 
         ((MoveResult.Moved)r).Renamed.Should().BeTrue();
         pending!.JobId.Should().Be(job);
-        await journal.Received(1).CommitAsync(pending.Id, @"C:\vault\notes (2).txt", Arg.Any<CancellationToken>());
-        await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default, default!);
+        await journal.Received(1).CommitAsync(Arg.Any<IUnitOfWork>(), pending.Id, @"C:\vault\notes (2).txt", Arg.Any<CancellationToken>());
+        await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default!, default, default!);
     }
 }
