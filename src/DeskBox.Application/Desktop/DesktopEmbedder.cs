@@ -22,7 +22,7 @@ public enum EmbedMode
 /// </list>
 /// 所有回调都在调用方的 UI 线程上执行（IShellNotifications 的实现负责封送）。
 /// </summary>
-public sealed class DesktopEmbedder : IDisposable
+public sealed class DesktopEmbedder : Startup.IStartupEmbedder, IDisposable
 {
     private readonly IUnitOfWorkFactory _db;
     private readonly IFenceStore _fences;

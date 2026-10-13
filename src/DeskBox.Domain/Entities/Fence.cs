@@ -60,8 +60,6 @@ public sealed class Fence
     public void Expand() => _state.Fire(FenceTrigger.Expand);
     public void Hide() => _state.Fire(FenceTrigger.Hide);
     public void Show() => _state.Fire(FenceTrigger.Show);
-    public void MonitorLost() => _state.Fire(FenceTrigger.MonitorLost);
-    public void MonitorRestored() => _state.Fire(FenceTrigger.MonitorRestored);
 
     public void Delete()
     {

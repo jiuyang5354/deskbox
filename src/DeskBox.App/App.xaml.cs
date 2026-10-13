@@ -1,5 +1,87 @@
+using System.Diagnostics;
+using System.IO;
+using System.Windows;
+using DeskBox.Application.Desktop;
+using DeskBox.Application.Files;
+using DeskBox.Application.Ports;
+using DeskBox.Application.Startup;
+using DeskBox.Infrastructure.Files;
+using DeskBox.Infrastructure.Shell;
+using DeskBox.Infrastructure.Sqlite;
+using DeskBox.Infrastructure.Startup;
+
 namespace DeskBox.App;
 
+/// <summary>
+/// 组合根（TDD §4.6）：整个进程里只有这里 new 基础设施对象；其余各层只依赖 Application 端口。
+/// 启动顺序由 <see cref="StartupSequence"/> 保证：单实例 → 数据库迁移 → Journal 恢复 → 枚举桌面 → 嵌入方框。
+/// </summary>
 public partial class App : System.Windows.Application
 {
+    private readonly List<IDisposable> _owned = [];
+
+    /// <summary>只读模式下由 <see cref="GatedFileMover"/> 拒绝移动；后续整理功能从这里取移动器。</summary>
+    internal OperatingMode Mode { get; } = new();
+
+    internal IFileMover? FileMover { get; private set; }
+
+    protected override async void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+        try
+        {
+            var ui = SynchronizationContext.Current;
+            var instance = Own(new NamedMutexSingleInstance(ui));
+            var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskBox");
+            var dbPath = Path.Combine(dataDir, "deskbox.db");
+            var db = new SqliteUnitOfWorkFactory(dbPath);
+            var journal = new SqliteJournal();
+            var log = new TraceRecoveryLog();
+            var recovery = new JournalRecovery(db, journal, new WindowsFileIdentity(), new VaultDirectoryIndex(Path.Combine(dataDir, "Vault")),
+                new SqliteVaultRecordStore(), new SqliteLostFileNoticeStore(), log, TimeProvider.System);
+            var shell = Own(new Win32ShellNotifications(ui));
+            var windowing = new Win32DesktopWindowing();
+            var embedder = Own(new DesktopEmbedder(db, new SqliteFenceStore(), windowing, Own(new Win32MonitorService(shell)),
+                new WpfBoxWindows(windowing), shell));
+            var desktop = FileMoverFactory.CreateDesktopEnumerator();
+            if (desktop is IDisposable d) Own(d);
+            FileMover = new GatedFileMover(FileMoverFactory.Create(), Mode);
+
+            var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath), recovery, desktop, embedder,
+                new MessageBoxNotifier(), Mode);
+            var result = await sequence.RunAsync();
+            if (result.Outcome == StartupOutcome.SecondInstance) Shutdown(0);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Trace.TraceError("DeskBox 启动失败：{0}", ex);
+            MessageBox.Show($"DeskBox 无法启动：{ex.Message}", "DeskBox", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+        }
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        for (var i = _owned.Count - 1; i >= 0; i--) _owned[i].Dispose();
+        base.OnExit(e);
+    }
+
+    private T Own<T>(T item) where T : IDisposable
+    {
+        _owned.Add(item);
+        return item;
+    }
+
+    private sealed class MessageBoxNotifier : IStartupNotifier
+    {
+        public void ReadOnlyMode(string reason) =>
+            MessageBox.Show($"{reason}。DeskBox 已进入只读模式：方框照常显示，但不会移动任何文件。请重启 DeskBox 再试。",
+                "DeskBox", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private sealed class TraceRecoveryLog : IRecoveryLog
+    {
+        public void UncertainPending(UncertainPendingEvent e) => Trace.TraceWarning("UncertainPending {0}", e);
+        public void RecoveryFailed(RecoveryFailedEvent e) => Trace.TraceWarning("RecoveryFailed {0}", e);
+    }
 }

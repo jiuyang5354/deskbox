@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.8
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.9
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -48,7 +48,7 @@ flowchart TD
 - **兜底（P0）**：托盘"临时显示系统桌面图标"；`SafeModePolicy`：连续 2 次启动后 30 秒内崩溃 → 安全模式。崩溃处理器先还原 Explorer 图标再写转储。
 - **文件移动原子性**：写 Journal(Pending) → 移动 → Commit(实际路径)；启动时先恢复 Journal，再嵌入桌面层，最后渲染。
 - **重命名跟踪**：按 `file_id` 查找记录更新 `file_path`；找不到则从方框移除。
-- **显示器变化**：监听 `WM_DISPLAYCHANGE` / `WM_DPICHANGED`；指纹缺失 → Orphaned → 主屏暂存方框；重现后恢复。
+- **显示器变化**：监听 `WM_DISPLAYCHANGE` / `WM_DPICHANGED`；指纹缺失 → 整个方框临时挪到主屏工作区显示（不落库）；重现后按数据库原记录恢复（见 4.5.2）。v1.0.9 起删除 `Orphaned` 状态及 `MonitorLost` / `MonitorRestored` 触发器。 方框状态从未落库（`fence` 表无状态列，迁移 v1/v2 里也没有任何 Orphaned 值或约束），所以无需数据迁移，也不新增迁移版本。
 
 ### 4.1 重名改名算法（RenamingFileMover，Application 层）
 1. **不预先检查**目标是否存在（避免检查与移动之间的 TOCTOU 竞争），直接调用 `MoveFileExW(src, dst, 0)`：不带 `MOVEFILE_REPLACE_EXISTING`，也不带 `MOVEFILE_COPY_ALLOWED`（跨卷直接失败）。
@@ -175,6 +175,17 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   2. 任务管理器结束 explorer.exe 再运行：方框在数秒内回到原位置（数据库位置）；
   3. 拔掉方框所在显示器：方框完整出现在主显示器工作区；接回后回到原显示器原位置；
   4. 100% / 150% / 200% 缩放下拖动并重启 DeskBox，位置不漂移。
+
+### 4.6 应用启动顺序（v1.0.9，启动接入）
+组合根只在 `DeskBox.App/App.xaml.cs`（`OnStartup`）：只有这里 new 基础设施对象（SQLite、Win32、WPF 窗口），其他层只依赖 Application 端口。顺序由 `Application/Startup/StartupSequence` 保证，严格为：
+1. **单实例**：`ISingleInstance`（`NamedMutexSingleInstance`，`Local\DeskBox.<用户 SID>.mutex`）。抢不到锁 → `Set` 同名事件 `…activate` 通知已运行的实例（触发 `Activated`）→ 返回 `SecondInstance`，入口 `Shutdown(0)`。此时**未**打开数据库、未碰任何文件。
+2. **数据库**：`IDatabaseBootstrapper`（`SqliteDatabaseBootstrapper`）建目录 `%LOCALAPPDATA%\DeskBox` 并 `SqliteSchema.MigrateAsync`；版本过高抛出，入口提示后退出。
+3. **Journal 恢复**：`IStartupRecovery`（`JournalRecovery`）处理全部 Pending。**恢复抛异常（取消除外）或仍有条目为 `Failed`（保持 Pending）→ 只读模式**：`OperatingMode.EnterReadOnly`，`IStartupNotifier` 提示用户，**跳过桌面枚举**。所有移动经 `GatedFileMover`，只读时在任何原生尝试之前抛 `ReadOnlyModeException`（`JournaledMove` 据此立即 RollBack 刚写的 Pending）。只读在本进程内不退出，重启再试。`Lost` 视为已处理，不触发只读。
+4. **枚举桌面**：仅非只读时，`IDesktopEnumerator.EnumerateAsync`。
+5. **嵌入**：`IStartupEmbedder`（`DesktopEmbedder.StartAsync`）从数据库读方框，嵌入 WorkerW 或降级置底。只读模式下照常显示方框。
+
+**测试**（`StartupSequenceTests`，假组件记录调用顺序）：正常为 `mutex → migrate → recover → enumerate → embed`，恢复严格早于枚举与嵌入；第二实例只有 `mutex → signal`；恢复异常 / 有 `Failed` 条目 → 只读、提示、无枚举；取消不被吞且不嵌入；只读时 `GatedFileMover` 不调用内部移动器。`BootstrapperTests` 覆盖建目录 + 迁移可重复。
+- 已知限制：收纳库目录暂定 `%LOCALAPPDATA%\DeskBox\Vault`（PRD 未定义位置，若与桌面不同盘会全部 CrossVolume 跳过），待 PM 确认。单实例的“带到前台”目前只触发 `Activated` 事件，UI 响应在任务 5 实现。
 
 ### 4.4 SQLite 持久化（v1.0.6，DeskBox.Infrastructure.Core）
 `DeskBox.Infrastructure.Core` 目标框架为 `net8.0`，不依赖 WPF，所以集成测试能在任何宿主上对真实 SQLite 文件运行。Windows 专用的部分用 `[SupportedOSPlatform("windows")]` 标注。

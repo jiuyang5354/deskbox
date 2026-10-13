@@ -91,8 +91,6 @@ public class FenceTests
         f.Expand(); f.State.Should().Be(FenceState.Expanded);
         f.Hide(); f.State.Should().Be(FenceState.Hidden);
         f.Show(); f.State.Should().Be(FenceState.Expanded);
-        f.MonitorLost(); f.State.Should().Be(FenceState.Orphaned);
-        f.MonitorRestored(); f.State.Should().Be(FenceState.Expanded);
         f.Delete(); f.State.Should().Be(FenceState.Deleted);
         FluentActions.Invoking(f.Show).Should().Throw<InvalidTransitionException>();
     }
