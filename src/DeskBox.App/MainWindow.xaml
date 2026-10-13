@@ -1,0 +1,11 @@
+<Window x:Class="DeskBox.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="DeskBox 桌面收纳" Width="420" Height="240">
+    <StackPanel Margin="24">
+        <TextBlock FontSize="18" Text="DeskBox 桌面收纳" />
+        <TextBlock Margin="0,12,0,0" TextWrapping="Wrap"
+                   Text="图标由 DeskBox 显示，文件位置不会改变。点击确认后才会隐藏系统桌面图标。" />
+        <Button Margin="0,16,0,0" Width="96" HorizontalAlignment="Left" Content="确认" Click="OnConfirm" />
+    </StackPanel>
+</Window>
