@@ -15,13 +15,20 @@ public sealed record FenceItemView(Guid Id, string Name);
 /// </summary>
 public sealed class FenceView : Border
 {
-    private static readonly Brush Normal = new SolidColorBrush(Color.FromArgb(0xCC, 0x20, 0x24, 0x2C));
-    private static readonly Brush TitleNormal = new SolidColorBrush(Color.FromArgb(0xFF, 0x2E, 0x34, 0x40));
-    private static readonly Brush TitleHover = new SolidColorBrush(Color.FromArgb(0xFF, 0x44, 0x4E, 0x60));
-    private static readonly Brush DropFill = new SolidColorBrush(Color.FromArgb(0xCC, 0x1E, 0x4E, 0x8C));
-    private static readonly Brush DropBorder = new SolidColorBrush(Color.FromRgb(0x4D, 0xA3, 0xFF));
-    private static readonly Brush BorderNormal = new SolidColorBrush(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
-    private static readonly Brush ItemHover = new SolidColorBrush(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush Normal = Frozen(Color.FromArgb(0xCC, 0x20, 0x24, 0x2C));
+    private static readonly Brush TitleNormal = Frozen(Color.FromArgb(0xFF, 0x2E, 0x34, 0x40));
+    private static readonly Brush TitleHover = Frozen(Color.FromArgb(0xFF, 0x44, 0x4E, 0x60));
+    private static readonly Brush DropFill = Frozen(Color.FromArgb(0xCC, 0x1E, 0x4E, 0x8C));
+    private static readonly Brush DropBorder = Frozen(Color.FromRgb(0x4D, 0xA3, 0xFF));
+    private static readonly Brush BorderNormal = Frozen(Color.FromArgb(0x66, 0xFF, 0xFF, 0xFF));
+    private static readonly Brush ItemHover = Frozen(Color.FromArgb(0x55, 0xFF, 0xFF, 0xFF));
+
+    private static SolidColorBrush Frozen(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
 
     private readonly Border _title = new() { Padding = new Thickness(8, 4, 8, 4) };
     private readonly TextBlock _titleText = new() { Foreground = Brushes.White, FontWeight = FontWeights.SemiBold, FontSize = 13 };
