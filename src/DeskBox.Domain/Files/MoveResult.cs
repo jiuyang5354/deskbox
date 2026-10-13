@@ -15,19 +15,6 @@ public abstract record MoveResult(string SourcePath)
     {
         /// <summary>写入 Journal/日志的中止原因，例如 "NeedsAdmin (Win32 5)"。</summary>
         public string AbortReason => NativeErrorCode is { } code ? $"{Reason} (Win32 {code})" : Reason.ToString();
-
-        public string Message => Reason switch
-        {
-            SkipReason.Locked => "文件正在被占用",
-            SkipReason.ReadOnly => "文件为只读",
-            SkipReason.CrossVolume => "目标位于其他磁盘分区",
-            SkipReason.CloudOnly => "文件仅在云端（OneDrive 占位符）",
-            SkipReason.NeedsAdmin => "需要管理员权限",
-            SkipReason.NotFound => "文件不存在",
-            SkipReason.NameConflict => "重名文件过多（已尝试到 (999)）",
-            SkipReason.IoError => "磁盘读写错误",
-            _ => throw new ArgumentOutOfRangeException(nameof(Reason), Reason, null),
-        };
     }
 
     public T Match<T>(Func<Moved, T> moved, Func<Skipped, T> skipped) => this switch

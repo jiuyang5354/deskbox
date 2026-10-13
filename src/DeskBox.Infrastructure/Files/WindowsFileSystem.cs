@@ -1,18 +1,25 @@
-using System.IO;
 using System.Runtime.InteropServices;
+using DeskBox.Application.Files;
 using DeskBox.Application.Ports;
 
 namespace DeskBox.Infrastructure.Files;
 
-public sealed class WindowsFileSystemProbe : IFileSystemProbe
+/// <summary>通过 GetFileAttributesW 读取属性；路径先经 Win32PathNormalizer（长路径、末尾空格/点均保留）。</summary>
+public sealed partial class WindowsFileSystemProbe : IFileSystemProbe
 {
-    public bool IsDirectory(string path) => Directory.Exists(path);
+    private const uint InvalidFileAttributes = 0xFFFF_FFFF;
+    private const uint DirectoryAttribute = 0x10;
+
+    public bool IsDirectory(string path) => GetAttributes(path) is { } a && (a & DirectoryAttribute) != 0;
 
     public uint? GetAttributes(string path)
     {
-        try { return (uint)File.GetAttributes(path); }
-        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException) { return null; }
+        var a = GetFileAttributes(Win32PathNormalizer.Normalize(path));
+        return a == InvalidFileAttributes ? null : a;
     }
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFileAttributesW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint GetFileAttributes(string fileName);
 }
 
 public sealed partial class WindowsKnownFolders : IKnownFolders

@@ -16,21 +16,6 @@ public class MoveResultTests
         moved.SourcePath.Should().Be("a");
     }
 
-    [Theory]
-    [InlineData(SkipReason.Locked, "占用")]
-    [InlineData(SkipReason.ReadOnly, "只读")]
-    [InlineData(SkipReason.CrossVolume, "分区")]
-    [InlineData(SkipReason.CloudOnly, "云端")]
-    [InlineData(SkipReason.NeedsAdmin, "管理员")]
-    [InlineData(SkipReason.NotFound, "不存在")]
-    [InlineData(SkipReason.NameConflict, "重名")]
-    [InlineData(SkipReason.IoError, "磁盘")]
-    public void Skip_messages(SkipReason r, string fragment) =>
-        new MoveResult.Skipped("a", r).Message.Should().Contain(fragment);
-
-    [Fact]
-    public void Unknown_reason_throws() =>
-        FluentActions.Invoking(() => new MoveResult.Skipped("a", (SkipReason)42).Message).Should().Throw<ArgumentOutOfRangeException>();
 }
 
 public class SafeModePolicyTests
