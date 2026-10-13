@@ -606,7 +606,7 @@ public class InstanceActivationTests
         var desktop = Substitute.For<IDesktopEnumerator>();
         var embedder = Substitute.For<IStartupEmbedder>();
         var db = Substitute.For<IUnitOfWorkFactory>();
-        var sut = new StartupSequence(instance, database, recovery, desktop, embedder, Substitute.For<IStartupNotifier>(), new OperatingMode());
+        var sut = new StartupSequence(instance, database, Substitute.For<IStagingSelfCheck>(), recovery, desktop, embedder, Substitute.For<IStartupNotifier>(), new OperatingMode());
 
         var r = await sut.RunAsync();
 

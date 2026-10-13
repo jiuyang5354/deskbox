@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.11
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.12
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -177,15 +177,16 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   3. 拔掉方框所在显示器：方框完整出现在主显示器工作区；接回后回到原显示器原位置；
   4. 100% / 150% / 200% 缩放下拖动并重启 DeskBox，位置不漂移。
 
-### 4.6 应用启动顺序（v1.0.10，启动接入 + 收纳库路径）
+### 4.6 应用启动顺序（v1.0.10，启动接入 + 收纳库路径；v1.0.12 增加第 2.5 步）
 组合根只在 `DeskBox.App/App.xaml.cs`（`OnStartup`）：只有这里 new 基础设施对象（SQLite、Win32、WPF 窗口），其他层只依赖 Application 端口。顺序由 `Application/Startup/StartupSequence` 保证，严格为：
 1. **单实例**：`ISingleInstance`（`NamedMutexSingleInstance`，`Local\DeskBox.<用户 SID>.mutex`）。抢不到锁 → `Set` 同名事件 `…activate` 通知已运行的实例（触发 `Activated`）→ 返回 `SecondInstance`，入口 `Shutdown(0)`。此时**未**打开数据库、未碰任何文件。
 2. **数据库**：`IDatabaseBootstrapper`（`SqliteDatabaseBootstrapper`）建目录 `%LOCALAPPDATA%\DeskBox` 并 `SqliteSchema.MigrateAsync`；版本过高抛出，入口提示后退出。
+2.5. **暂存方框自检**（v1.0.12，PRD v1.2.6 §6）：`IStagingSelfCheck`（`StagingFenceSelfCheck`）。必须在迁移之后、Journal 恢复之前：枚举桌面会把新文件放进暂存方框，暂存方框必须先存在。在一个 `BEGIN IMMEDIATE` 事务里查 `is_staging=1` 的方框；缺失则在主显示器默认位置（DIP 24,24，280×320，标题「暂存」；无显示器时 `monitor_id='PRIMARY'`）补建一个，并写警告日志 `StagingFenceRecreated`。可重复执行：已存在就什么都不写；迁移 v4 的部分唯一索引 `ux_fence_single_staging ON fence (is_staging) WHERE is_staging = 1` 兜底保证最多一个。**补建失败 → 只读模式**，与恢复失败相同（`OperatingMode.EnterReadOnly`、提示用户、跳过枚举，`GatedFileMover` 拒绝一切移动）；自检失败时仍执行 Journal 恢复（恢复本身不移动文件），提示使用第一个失败原因。取消不被吞。迁移 v4 处理旧库重复：保留 `sort_order` 最小（同序取 `id` 最小）的暂存方框，其余降为普通方框（`is_staging=0`），方框和映射都保留。
 3. **Journal 恢复**：`IStartupRecovery`（`JournalRecovery`）处理全部 Pending。**恢复抛异常（取消除外）或仍有条目为 `Failed`（保持 Pending）→ 只读模式**：`OperatingMode.EnterReadOnly`，`IStartupNotifier` 提示用户，**跳过桌面枚举**。所有移动经 `GatedFileMover`，只读时在任何原生尝试之前抛 `ReadOnlyModeException`（`JournaledMove` 据此立即 RollBack 刚写的 Pending）。只读在本进程内不退出，重启再试。`Lost` 视为已处理，不触发只读。
 4. **枚举桌面**：仅非只读时，`IDesktopEnumerator.EnumerateAsync`。
 5. **嵌入**：`IStartupEmbedder`（`DesktopEmbedder.StartAsync`）从数据库读方框，嵌入 WorkerW 或降级置底。只读模式下照常显示方框。
 
-**测试**（`StartupSequenceTests`，假组件记录调用顺序）：正常为 `mutex → migrate → recover → enumerate → embed`，恢复严格早于枚举与嵌入；第二实例只有 `mutex → signal`；恢复异常 / 有 `Failed` 条目 → 只读、提示、无枚举；取消不被吞且不嵌入；只读时 `GatedFileMover` 不调用内部移动器。`BootstrapperTests` 覆盖建目录 + 迁移可重复。
+**测试**（`StartupSequenceTests`，假组件记录调用顺序）：正常为 `mutex → migrate → staging → recover → enumerate → embed`，恢复严格早于枚举与嵌入；第二实例只有 `mutex → signal`；自检补建失败 → 只读、提示、无枚举、`GatedFileMover` 拒绝移动（`StagingSelfCheckTests`：删掉暂存方框后启动恰好补建一个并记警告，连续启动两次不多建；SQLite 上同样验证）；恢复异常 / 有 `Failed` 条目 → 只读、提示、无枚举；取消不被吞且不嵌入；只读时 `GatedFileMover` 不调用内部移动器。`BootstrapperTests` 覆盖建目录 + 迁移可重复。
 - 收纳库默认路径：`%USERPROFILE%\DeskBox\Vault`（PRD v1.2.4）。组合根在启动时若目录不存在则创建；数据库与日志仍在 `%LOCALAPPDATA%\DeskBox`。与桌面不同盘时由 `WinPath.IsCrossVolume` 预检查返回 CrossVolume、不复制。未正式发布，不做从旧 `%LOCALAPPDATA%\DeskBox\Vault` 的迁数据，旧路径残留文件忽略。单实例的“带到前台”UI 响应见 §4.7 第 6 条。
 
 **§4.7 方框界面（任务 5）**
@@ -194,6 +195,13 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 3. **布局落库**：拖动过程中只改窗口，松手时写一次库，坐标用工作区相对 DIP。宽和高都不能小于 120 DIP，超出可见区域就夹回来。
 4. **只读门禁**：命令执行前先检查只读状态，改归属、移文件的命令返回 `ReadOnly`，改布局的照常执行。界面根据同一个状态把对应菜单项置灰，并提示原因。
 5. **暂存方框与公共桌面**：`is_staging=1` 的方框不能删，公共桌面的项不能移入收纳库。这两条规则在 Domain 层判断，界面只负责显示结果。
+5A. **删除方框**（v1.0.12，PRD v1.2.6 §7A「删除方框」）：
+   - 方框里的文件全部改归属到暂存方框，排在暂存方框已有项之后（保持原相对顺序）；只在一个 `BEGIN IMMEDIATE` 事务里改 `fence_item` 再删方框行，不调 `MoveFileExW`。`fence_item` 的 `ON DELETE CASCADE` 只作兜底。
+   - 方框里有文件时弹一次确认框「方框里的 N 个文件会移到暂存方框，磁盘上的文件不动」，默认选中「取消」，回车或 Esc 都不删。
+   - N 在事务里重新算；与弹框时不同也照常执行，不弹第二次确认，结果提示写实际转过去的数量。
+   - 空方框不弹确认框，直接删除。
+   - 删除方框算第 4 条的改归属：只读时返回 `ReadOnly`，什么都不改。
+   - 暂存方框缺失：拒绝删除、什么都不改，写错误日志 `StagingFenceMissing`，界面提示「数据异常，未删除」；**删除时不重建暂存方框**（重建只由 §4.6 第 2.5 步启动自检负责）。
 6. **再次启动**：沿用现有的单实例互斥锁和激活信号。已运行的实例收到信号后，在界面线程把窗口恢复、激活并置前，新进程不开库直接退出。
 7. **测试**：每个命令都要有单元测试，覆盖正常路径、只读被拒、暂存方框删除被拒、公共桌面项移入收纳库被拒。改归属那条要断言 `MoveFileExW` 一次都没被调用。界面交互放进真机检查清单。
 

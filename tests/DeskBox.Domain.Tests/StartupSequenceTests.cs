@@ -9,7 +9,7 @@ namespace DeskBox.Domain.Tests;
 
 public sealed class StartupSequenceTests
 {
-    private sealed class Fakes : ISingleInstance, IDatabaseBootstrapper, IStartupRecovery, IDesktopEnumerator, IStartupEmbedder, IStartupNotifier
+    private sealed class Fakes : ISingleInstance, IDatabaseBootstrapper, IStartupRecovery, IDesktopEnumerator, IStartupEmbedder, IStartupNotifier, IStagingSelfCheck
     {
         public List<string> Calls { get; } = [];
         public bool Acquire { get; set; } = true;
@@ -20,6 +20,12 @@ public sealed class StartupSequenceTests
         public bool TryAcquire() { Calls.Add("mutex"); return Acquire; }
         public void SignalRunningInstance() => Calls.Add("signal");
         public Task MigrateAsync(CancellationToken ct = default) { Calls.Add("migrate"); return Task.CompletedTask; }
+        public Exception? StagingThrows { get; set; }
+        public Task<bool> EnsureAsync(CancellationToken ct = default)
+        {
+            Calls.Add("staging");
+            return StagingThrows is { } ex ? Task.FromException<bool>(ex) : Task.FromResult(false);
+        }
         public Task<IReadOnlyList<RecoveredEntry>> RecoverAsync(CancellationToken ct = default)
         {
             Calls.Add("recover");
@@ -40,7 +46,7 @@ public sealed class StartupSequenceTests
     {
         var f = new Fakes();
         var mode = new OperatingMode();
-        return (new StartupSequence(f, f, f, f, f, f, mode), f, mode);
+        return (new StartupSequence(f, f, f, f, f, f, f, mode), f, mode);
     }
 
     [Fact]
@@ -48,7 +54,7 @@ public sealed class StartupSequenceTests
     {
         var (sut, f, mode) = Make();
         var r = await sut.RunAsync();
-        f.Calls.Should().Equal("mutex", "migrate", "recover", "enumerate", "embed");
+        f.Calls.Should().Equal("mutex", "migrate", "staging", "recover", "enumerate", "embed");
         f.Calls.IndexOf("recover").Should().BeLessThan(f.Calls.IndexOf("enumerate")).And.BeLessThan(f.Calls.IndexOf("embed"));
         r.Outcome.Should().Be(StartupOutcome.Running);
         r.DesktopItems.Should().ContainSingle();
@@ -72,7 +78,7 @@ public sealed class StartupSequenceTests
         f.RecoveryThrows = new IOException("disk");
         var r = await sut.RunAsync();
         r.Outcome.Should().Be(StartupOutcome.ReadOnly);
-        f.Calls.Should().Equal("mutex", "migrate", "recover", "notify-readonly", "embed");
+        f.Calls.Should().Equal("mutex", "migrate", "staging", "recover", "notify-readonly", "embed");
         r.DesktopItems.Should().BeEmpty();
         mode.IsReadOnly.Should().BeTrue();
         f.NotifiedReason.Should().Contain("IOException");
@@ -132,5 +138,43 @@ public sealed class StartupSequenceTests
         FluentActions.Invoking(() => new GatedFileMover(null!, new OperatingMode())).Should().Throw<ArgumentNullException>();
         FluentActions.Invoking(() => new GatedFileMover(Substitute.For<IFileMover>(), null!)).Should().Throw<ArgumentNullException>();
         FluentActions.Invoking(() => new OperatingMode().EnterReadOnly(" ")).Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Staging_self_check_runs_after_migrate_and_before_recovery()
+    {
+        var (sut, f, _) = Make();
+        await sut.RunAsync();
+        f.Calls.IndexOf("staging").Should().Be(f.Calls.IndexOf("migrate") + 1);
+        f.Calls.IndexOf("staging").Should().BeLessThan(f.Calls.IndexOf("recover")).And.BeLessThan(f.Calls.IndexOf("enumerate"));
+    }
+
+    [Fact]
+    public async Task Staging_recreation_failure_enters_read_only_skips_enumeration_and_gates_moves()
+    {
+        var (sut, f, mode) = Make();
+        f.StagingThrows = new IOException("disk full");
+        var r = await sut.RunAsync();
+        r.Outcome.Should().Be(StartupOutcome.ReadOnly);
+        f.Calls.Should().Equal("mutex", "migrate", "staging", "recover", "notify-readonly", "embed");
+        r.ReadOnlyReason.Should().Contain("暂存方框补建失败").And.Contain("IOException");
+        mode.IsReadOnly.Should().BeTrue();
+        var inner = Substitute.For<IFileMover>();
+        await FluentActions.Awaiting(() => new GatedFileMover(inner, mode).MoveAsync(@"C:\a", @"C:\b", null))
+            .Should().ThrowAsync<ReadOnlyModeException>();
+        inner.ReceivedCalls().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Staging_failure_reason_wins_over_later_recovery_failure_and_cancellation_propagates()
+    {
+        var (sut, f, _) = Make();
+        f.StagingThrows = new IOException("a");
+        f.RecoveryThrows = new InvalidOperationException("b");
+        (await sut.RunAsync()).ReadOnlyReason.Should().Contain("暂存方框");
+        var (sut2, f2, _) = Make();
+        f2.StagingThrows = new OperationCanceledException();
+        await FluentActions.Awaiting(() => sut2.RunAsync()).Should().ThrowAsync<OperationCanceledException>();
+        f2.Calls.Should().NotContain("recover");
     }
 }

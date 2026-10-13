@@ -4,6 +4,7 @@ using DeskBox.Application.Ports;
 using DeskBox.Application.Resources;
 using DeskBox.Domain.Entities;
 using DeskBox.Domain.Files;
+using DeskBox.Application.Startup;
 using NSubstitute;
 
 namespace DeskBox.Domain.Tests;
@@ -233,5 +234,50 @@ public class JournalRecoveryTests
         _fs.Files[Src] = IdA;
         IFileMover m = new RenamingFileMover(_fs, _fs, _fs);
         (await m.MoveAsync(Src, Dst)).Should().BeOfType<MoveResult.Moved>();
+    }
+
+    // ---------- 恢复只检查磁盘、改日志状态，从不调用 MoveFileExW ----------
+    private async Task SeedAllOutcomes()
+    {
+        // 仍在源处 → RolledBack；在候选处 → Committed；收纳库别处 → 扫描找到；哪里都没有 → Lost
+        var atSource = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "1a2b3c4d:000000000000000000000000000000a1", @"C:\desk\a.txt", @"C:\vault\a.txt", default);
+        var atCandidate = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "1a2b3c4d:000000000000000000000000000000a2", @"C:\desk\b.txt", @"C:\vault\b.txt", default);
+        var elsewhere = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "1a2b3c4d:000000000000000000000000000000a3", @"C:\desk\c.txt", @"C:\vault\c.txt", default);
+        var lost = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "1a2b3c4d:000000000000000000000000000000a4", @"C:\desk\d.txt", @"C:\vault\d.txt", default);
+        foreach (var e in new[] { atSource, atCandidate, elsewhere, lost }) await Seed(e);
+        _fs.Files[@"C:\desk\a.txt"] = atSource.FileId;
+        _fs.Files[@"C:\vault\b.txt"] = atCandidate.FileId;
+        _fs.Files[@"C:\vault\sub\c (2).txt"] = elsewhere.FileId;
+    }
+
+    [Fact]
+    public async Task Recovery_never_calls_MoveFileExW_for_any_outcome()
+    {
+        await SeedAllOutcomes();
+        var r = await Recovery().RecoverAsync();
+        r.Should().HaveCount(4);
+        r.Select(x => x.Outcome).Should().OnlyContain(o => o != RecoveryOutcome.Failed);
+        _fs.Attempts.Should().BeEmpty("恢复只看磁盘、改 Journal 状态，不移动文件");
+        _journal.Entries.Values.Should().OnlyContain(e => e.Status != JournalStatus.Pending);
+    }
+
+    [Fact]
+    public async Task Recovery_after_failed_staging_self_check_still_runs_and_never_calls_MoveFileExW()
+    {
+        await SeedAllOutcomes();
+        var instance = Substitute.For<ISingleInstance>();
+        instance.TryAcquire().Returns(true);
+        var staging = Substitute.For<IStagingSelfCheck>();
+        staging.EnsureAsync(default).ReturnsForAnyArgs(Task.FromException<bool>(new IOException("disk full")));
+        var mode = new OperatingMode();
+
+        var result = await new StartupSequence(instance, Substitute.For<IDatabaseBootstrapper>(), staging, Recovery(),
+            Substitute.For<IDesktopEnumerator>(), Substitute.For<IStartupEmbedder>(), Substitute.For<IStartupNotifier>(), mode).RunAsync();
+
+        result.Outcome.Should().Be(StartupOutcome.ReadOnly);
+        result.Recovered.Should().HaveCount(4, "自检失败后恢复照常执行");
+        _fs.Attempts.Should().BeEmpty();
+        _journal.Entries.Values.Should().OnlyContain(e => e.Status != JournalStatus.Pending);
+        mode.IsReadOnly.Should().BeTrue();
     }
 }

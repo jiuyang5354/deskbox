@@ -626,3 +626,34 @@ internal static class NSubstituteFree
     public static IMonitorService Monitors() => new M();
     public static DeskBox.Application.Fences.IVaultItemMover NoVault() => new V();
 }
+
+public sealed class StagingSelfCheckSqliteTests : IAsyncLifetime
+{
+    private readonly TempDb _t = new();
+    public Task InitializeAsync() => _t.InitializeAsync();
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    private sealed class Log : DeskBox.Application.Startup.IStagingSelfCheckLog
+    {
+        public List<Guid> Warnings { get; } = [];
+        public void StagingFenceRecreated(Guid fenceId, string monitorId) => Warnings.Add(fenceId);
+    }
+
+    [Fact]
+    public async Task Deleted_staging_is_recreated_exactly_once_across_two_starts()
+    {
+        var store = new SqliteFenceStore();
+        var old = new Fence(Guid.NewGuid(), "暂存", "m", 0, 0, 200, 200, isStaging: true);
+        await _t.Tx(u => store.UpsertAsync(u, old));
+        await _t.Tx(u => store.DeleteAsync(u, old.Id));
+        var log = new Log();
+
+        var first = new DeskBox.Application.Startup.StagingFenceSelfCheck(_t.Db, store, NSubstituteFree.Monitors(), log);
+        (await first.EnsureAsync()).Should().BeTrue();
+        await SqliteSchema.MigrateAsync(_t.Db);
+        (await new DeskBox.Application.Startup.StagingFenceSelfCheck(_t.Db, store, NSubstituteFree.Monitors(), log).EnsureAsync()).Should().BeFalse();
+
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM fence WHERE is_staging = 1;")).Should().Be(1);
+        log.Warnings.Should().ContainSingle();
+    }
+}

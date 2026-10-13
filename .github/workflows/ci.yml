@@ -85,7 +85,7 @@ jobs:
           $sha = "${{ github.sha }}".Substring(0, 7)
           dotnet publish src/DeskBox.App/DeskBox.App.csproj -c Release -r win-x64 --self-contained true -o publish/DeskBox
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path publish/DeskBox/DeskBox.App.exe)) { Write-Error 'DeskBox.App.exe missing from publish output'; exit 1 }
+          if (-not (Test-Path publish/DeskBox/DeskBox.exe)) { Write-Error 'DeskBox.exe missing from publish output'; exit 1 }
           "PREVIEW_NAME=DeskBox-preview-$sha-win-x64" >> $env:GITHUB_ENV
 
       - name: Upload preview build
