@@ -6,6 +6,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- 覆盖传递依赖 2.1.6（GHSA-2m69-gcr7-jv3q，SQLite 漏洞，<= 2.1.11 受影响） -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\DeskBox.Application\DeskBox.Application.csproj" />
