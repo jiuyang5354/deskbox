@@ -75,7 +75,7 @@ public class QaAcceptanceTests
     }
 
     // QA-05 公共桌面预检被前缀/斜杠绕过
-    [Theory(Skip = "P2-1 待修复：修复 PR 中去掉 Skip")]
+    [Theory]
     [InlineData(@"\\?\C:\Users\Public\Desktop\a.lnk")]
     [InlineData(@"C:/Users/Public/Desktop/a.lnk")]
     [InlineData(@"C:\Users\Public\Desktop\\a.lnk")]
