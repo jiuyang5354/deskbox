@@ -5,12 +5,12 @@
   <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
   <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
   <data name="Locked" xml:space="preserve"><value>文件正被其他程序使用</value></data>
-  <data name="CloudOnly" xml:space="preserve"><value>这是 OneDrive 云端文件，未下载到本地</value></data>
-  <data name="NeedsAdmin" xml:space="preserve"><value>公共桌面文件需要管理员权限</value></data>
-  <data name="NotFound" xml:space="preserve"><value>文件已被删除或移动</value></data>
-  <data name="CrossVolume" xml:space="preserve"><value>收纳库和桌面不在同一个磁盘</value></data>
-  <data name="ReadOnly" xml:space="preserve"><value>文件所在磁盘处于写保护状态</value></data>
-  <data name="NameConflict" xml:space="preserve"><value>同名文件过多，无法自动改名</value></data>
-  <data name="IoError" xml:space="preserve"><value>未知错误，详见日志</value></data>
+  <data name="CloudOnly" xml:space="preserve"><value>这是 OneDrive 云端文件，还没下载到本机</value></data>
+  <data name="NeedsAdmin" xml:space="preserve"><value>公共桌面上的文件需要管理员权限</value></data>
+  <data name="NotFound" xml:space="preserve"><value>文件已被删除或移走</value></data>
+  <data name="CrossVolume" xml:space="preserve"><value>收纳库和桌面不在同一个磁盘上</value></data>
+  <data name="ReadOnly" xml:space="preserve"><value>磁盘处于写保护状态</value></data>
+  <data name="NameConflict" xml:space="preserve"><value>同名文件太多，无法自动改名</value></data>
+  <data name="IoError" xml:space="preserve"><value>未知错误，详情见日志</value></data>
   <data name="LostFilesNotice" xml:space="preserve"><value>有 {0} 个文件在上次整理中断后没能找回：{1}。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。</value></data>
 </root>
