@@ -170,10 +170,17 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 **时间格式**：所有时间列都以 UTC 文本保存，格式固定为 `yyyy-MM-ddTHH:mm:ss.fffZ`（定长，所以按文本排序就是按时间排序）。统一由 `SqliteTime.Format` / `SqliteTime.Parse` 处理：写入时先转成 UTC，并截断到毫秒；读出的值 Offset 为 0。
 
 **AlreadyInProgress**
-- 在 Begin 阶段、调用 MoveFileExW 之前，`SqliteJournal.AppendPendingAsync` 在 `SAVEPOINT append_pending` 里插入 Pending。
-- 只有当 `SqliteExtendedErrorCode == 2067`（SQLITE_CONSTRAINT_UNIQUE），并且错误消息点名 Pending 部分唯一索引（SQLite 的消息写作 `UNIQUE constraint failed: journal.file_id`）时，才回滚到这个保存点并抛出 `JournalConflictException`。此时工作单元仍然可用，同一次整理里的其他文件照常继续。
-- 其他唯一冲突（例如主键冲突 1555、`vault_path` 冲突）和其他错误都按原样抛出。
-- `JournaledMove` 收到 `JournalConflictException` 后返回 `Skipped(AlreadyInProgress)`，`AbortReason` 为 "AlreadyInProgress"。这不算错误：不移动文件，不写日志，也不改动另一条 Pending。
+- **先查后写，同一事务**：在 Begin 阶段、调用 MoveFileExW 之前，`JournaledMove` 在同一个 `BEGIN IMMEDIATE` 事务里依次执行：
+  1. `IJournal.HasPendingAsync(uow, fileId)`，即 `SELECT 1 FROM journal WHERE file_id = upper(?) AND status = 'Pending'`。file_id 一律以大写保存，所以这等价于 OrdinalIgnoreCase 比较，并且能用上部分索引。
+  2. 已有 Pending 时直接返回 `Skipped(AlreadyInProgress)`，`AbortReason` 为 "AlreadyInProgress"；否则执行 `AppendPendingAsync` 写入 Pending。
+- **为什么不会有竞争**：`BEGIN IMMEDIATE` 一开事务就持有写锁，两个进程同时 Begin 同一文件时会被串行化，后到的一方一定能查到先到的那条 Pending。
+- **不是错误**：跳过时不移动文件，不写日志，也不改动另一条 Pending。
+- **唯一冲突一律按错误抛出**：`AppendPendingAsync` 是普通 INSERT，任何唯一约束冲突都作为 `SqliteException` 抛出，包括绕过预检查直接插入时撞上 `ux_journal_pending_file_id`（2067）和主键冲突（1555）。不再根据错误消息判断冲突，也不再使用 SAVEPOINT 或 `JournalConflictException`。部分唯一索引只作为最后一道防线。
+- **测试**：
+  - 结构测试：journal 上唯一一个包含 file_id 的唯一索引就是这个部分索引；
+  - 已有 Pending 时返回 AlreadyInProgress；
+  - 绕过预检查直接插入会抛异常；
+  - 两个 `DeskBox.SqliteWriter` 子进程同时 Begin 同一 file_id：最终恰好一条 Pending，另一方得到 AlreadyInProgress，两边都没有错误。
 - 用户文案在 Strings.resx 中，键为 `AlreadyInProgress`，值为“这个文件正在整理中，已跳过”（PRD v1.2.3）。
 
 **迁移规则**
