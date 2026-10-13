@@ -15,7 +15,7 @@ public sealed record RecoveredEntry(Guid EntryId, RecoveryOutcome Outcome, strin
 /// 每条记录单独隔离异常：失败的保持 Pending、写结构化日志、继续下一条；同一条连续 3 次启动失败 → 提示 + MarkLost（同一事务）。
 /// </summary>
 public sealed class JournalRecovery(IUnitOfWorkFactory db, IJournal journal, IFileIdentity identity, IVaultIndex vault,
-    IVaultRecordStore vaultRecords, ILostFileNoticeStore notices, IRecoveryLog log, TimeProvider clock)
+    IVaultRecordStore vaultRecords, ILostFileNoticeStore notices, IRecoveryLog log, TimeProvider clock) : Startup.IStartupRecovery
 {
     public async Task<IReadOnlyList<RecoveredEntry>> RecoverAsync(CancellationToken ct = default)
     {

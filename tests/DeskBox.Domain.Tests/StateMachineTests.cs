@@ -29,7 +29,6 @@ public class FenceStateMachineTests
         {
             case FenceState.Collapsed: m.Fire(FenceTrigger.Collapse); break;
             case FenceState.Hidden: m.Fire(FenceTrigger.Hide); break;
-            case FenceState.Orphaned: m.Fire(FenceTrigger.MonitorLost); break;
             case FenceState.Deleted: m.Fire(FenceTrigger.Delete); break;
         }
         m.State.Should().Be(s);
