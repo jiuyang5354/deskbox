@@ -13,7 +13,7 @@ public sealed class JournaledMove(IFileMover mover, IJournal journal, TimeProvid
         await journal.AppendPendingAsync(entry, ct);
         var result = await mover.MoveAsync(source, target, ct);
         if (result is MoveResult.Moved moved) await journal.CommitAsync(entry.Id, moved.TargetPath, ct);
-        else await journal.RollBackAsync(entry.Id, ct);
+        else if (result is MoveResult.Skipped skipped) await journal.RollBackAsync(entry.Id, skipped.AbortReason, ct);
         return result;
     }
 }

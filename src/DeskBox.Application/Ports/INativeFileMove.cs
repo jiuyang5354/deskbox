@@ -24,3 +24,26 @@ public static class Win32Errors
     public const int CloudFirst = 362;
     public const int CloudLast = 406;
 }
+
+/// <summary>文件系统只读探测（属性、是否目录），便于测试。</summary>
+public interface IFileSystemProbe
+{
+    bool IsDirectory(string path);
+
+    /// <summary>返回 Win32 文件属性位；文件不存在时返回 null。</summary>
+    uint? GetAttributes(string path);
+}
+
+/// <summary>已知文件夹解析。Windows 上 PublicDesktop 由 SHGetKnownFolderPath(FOLDERID_PublicDesktop) 得到。</summary>
+public interface IKnownFolders
+{
+    string PublicDesktop { get; }
+}
+
+public static class Win32FileAttributes
+{
+    public const uint Offline = 0x0000_1000;
+    public const uint RecallOnOpen = 0x0004_0000;
+    public const uint RecallOnDataAccess = 0x0040_0000;
+    public const uint CloudMask = Offline | RecallOnOpen | RecallOnDataAccess;
+}

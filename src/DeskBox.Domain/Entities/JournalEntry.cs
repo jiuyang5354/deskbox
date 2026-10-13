@@ -31,7 +31,16 @@ public sealed class JournalEntry
         Transition(JournalStatus.Committed, "Commit");
         ActualTargetPath = actualTargetPath;
     }
-    public void RollBack() => Transition(JournalStatus.RolledBack, "RollBack");
+    /// <summary>中止原因（含原始错误码），RollBack 时写入。</summary>
+    public string? AbortReason { get; private set; }
+
+    public void RollBack(string abortReason)
+    {
+        if (string.IsNullOrWhiteSpace(abortReason))
+            throw new DomainValidationException(nameof(AbortReason), "不能为空");
+        Transition(JournalStatus.RolledBack, "RollBack");
+        AbortReason = abortReason;
+    }
 
     private void Transition(JournalStatus to, string trigger)
     {

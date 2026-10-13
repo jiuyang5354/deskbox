@@ -10,8 +10,12 @@ public abstract record MoveResult(string SourcePath)
     /// <summary>移动成功。Renamed 表示因目标重名而自动改名为 "name (n).ext"。</summary>
     public sealed record Moved(string SourcePath, string TargetPath, bool Renamed = false) : MoveResult(SourcePath);
 
-    public sealed record Skipped(string SourcePath, SkipReason Reason) : MoveResult(SourcePath)
+    /// <summary>跳过。NativeErrorCode 为触发跳过的原始 Win32 错误码（预检查跳过时为 null）。</summary>
+    public sealed record Skipped(string SourcePath, SkipReason Reason, int? NativeErrorCode = null) : MoveResult(SourcePath)
     {
+        /// <summary>写入 Journal/日志的中止原因，例如 "NeedsAdmin (Win32 5)"。</summary>
+        public string AbortReason => NativeErrorCode is { } code ? $"{Reason} (Win32 {code})" : Reason.ToString();
+
         public string Message => Reason switch
         {
             SkipReason.Locked => "文件正在被占用",

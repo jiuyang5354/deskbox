@@ -38,7 +38,7 @@ public interface IJournal
 {
     Task AppendPendingAsync(JournalEntry entry, CancellationToken ct = default);
     Task CommitAsync(Guid entryId, string actualTargetPath, CancellationToken ct = default);
-    Task RollBackAsync(Guid entryId, CancellationToken ct = default);
+    Task RollBackAsync(Guid entryId, string abortReason, CancellationToken ct = default);
     Task<IReadOnlyList<JournalEntry>> GetPendingAsync(CancellationToken ct = default);
 }
 

@@ -230,15 +230,17 @@ public class JournalEntryTests
         e.Commit("t (2)");
         e.Status.Should().Be(JournalStatus.Committed);
         e.ActualTargetPath.Should().Be("t (2)");
-        FluentActions.Invoking(e.RollBack).Should().Throw<InvalidTransitionException>().Which.From.Should().Be("Committed");
+        FluentActions.Invoking(() => e.RollBack("x")).Should().Throw<InvalidTransitionException>().Which.From.Should().Be("Committed");
     }
 
     [Fact]
     public void Rolled_back_is_terminal()
     {
         var e = Make();
-        e.RollBack();
+        FluentActions.Invoking(() => e.RollBack("")).Should().Throw<DomainValidationException>();
+        e.RollBack("Locked (Win32 32)");
         e.Status.Should().Be(JournalStatus.RolledBack);
+        e.AbortReason.Should().Be("Locked (Win32 32)");
         FluentActions.Invoking(() => e.Commit("x")).Should().Throw<InvalidTransitionException>().Which.Trigger.Should().Be("Commit");
     }
 

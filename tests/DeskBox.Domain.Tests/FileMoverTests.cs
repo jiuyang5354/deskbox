@@ -7,8 +7,15 @@ using NSubstitute;
 namespace DeskBox.Domain.Tests;
 
 /// <summary>内存文件系统，模拟 MoveFileExW(src, dst, 0) 的不替换语义。</summary>
-internal sealed class FakeFs : INativeFileMove
+internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders
 {
+    public Dictionary<string, uint> Attributes { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> Dirs { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public string PublicDesktop { get; set; } = "/public/desktop";
+    public bool IsDirectory(string path) => Dirs.Contains(path);
+    public uint? GetAttributes(string path) =>
+        Attributes.TryGetValue(path, out var a) ? a : Files.ContainsKey(path) ? 0x20u : null;
+
     public Dictionary<string, string> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Locked { get; } = new(StringComparer.OrdinalIgnoreCase);
     public List<string> Attempts { get; } = [];
@@ -32,7 +39,8 @@ public class RenamingFileMoverTests
     private const string Src = "/desk/notes.txt";
     private const string Dst = "/vault/notes.txt";
     private readonly FakeFs _fs = new();
-    private RenamingFileMover Mover => new(_fs, _ => false);
+    private RenamingFileMover Mover => new(_fs, _fs, _fs);
+    private RenamingFileMover With(INativeFileMove native) => new(native, _fs, _fs);
 
     public RenamingFileMoverTests() => _fs.Files[Src] = "new";
 
@@ -59,7 +67,7 @@ public class RenamingFileMoverTests
     public async Task Locked_source_is_skipped_as_locked()
     {
         _fs.Locked.Add(Src);
-        (await Mover.MoveAsync(Src, Dst)).Should().Be(new MoveResult.Skipped(Src, SkipReason.Locked));
+        (await Mover.MoveAsync(Src, Dst)).Should().Be(new MoveResult.Skipped(Src, SkipReason.Locked, Win32Errors.SharingViolation));
         _fs.Files[Src].Should().Be("new");
         _fs.Attempts.Should().ContainSingle();
     }
@@ -70,7 +78,7 @@ public class RenamingFileMoverTests
         _fs.Files[Dst] = "o";
         for (var n = 2; n <= 999; n++) _fs.Files[$"/vault/notes ({n}).txt"] = "o";
         var r = await Mover.MoveAsync(Src, Dst);
-        r.Should().Be(new MoveResult.Skipped(Src, SkipReason.NameConflict));
+        r.Should().Be(new MoveResult.Skipped(Src, SkipReason.NameConflict, Win32Errors.AlreadyExists));
         _fs.Attempts.Should().HaveCount(999);
         _fs.Attempts[^1].Should().Be("/vault/notes (999).txt");
         _fs.Files[Src].Should().Be("new");
@@ -96,7 +104,7 @@ public class RenamingFileMoverTests
     {
         var native = Substitute.For<INativeFileMove>();
         native.Move(Src, Dst).Returns(Win32Errors.Success);
-        await new RenamingFileMover(native, _ => false).MoveAsync(Src, Dst);
+        await With(native).MoveAsync(Src, Dst);
         native.Received(1).Move(Src, Dst);
     }
 
@@ -105,7 +113,8 @@ public class RenamingFileMoverTests
     {
         _fs.Files["/desk/a.b"] = "dir";
         _fs.Files["/vault/a.b"] = "o";
-        var r = await new RenamingFileMover(_fs, _ => true).MoveAsync("/desk/a.b", "/vault/a.b");
+        _fs.Dirs.Add("/desk/a.b");
+        var r = await Mover.MoveAsync("/desk/a.b", "/vault/a.b");
         ((MoveResult.Moved)r).TargetPath.Should().Be("/vault/a.b (2)");
     }
 
@@ -116,7 +125,6 @@ public class RenamingFileMoverTests
     [InlineData(Win32Errors.PathNotFound, SkipReason.NotFound)]
     [InlineData(Win32Errors.AccessDenied, SkipReason.NeedsAdmin)]
     [InlineData(Win32Errors.NotSameDevice, SkipReason.CrossVolume)]
-    [InlineData(Win32Errors.WriteProtect, SkipReason.ReadOnly)]
     [InlineData(362, SkipReason.CloudOnly)]
     [InlineData(406, SkipReason.CloudOnly)]
     [InlineData(112, SkipReason.IoError)]
@@ -124,8 +132,60 @@ public class RenamingFileMoverTests
     {
         var native = Substitute.For<INativeFileMove>();
         native.Move(default!, default!).ReturnsForAnyArgs(error);
-        (await new RenamingFileMover(native, _ => false).MoveAsync(Src, Dst))
-            .Should().Be(new MoveResult.Skipped(Src, expected));
+        var r = (MoveResult.Skipped)await With(native).MoveAsync(Src, Dst);
+        r.Should().Be(new MoveResult.Skipped(Src, expected, error));
+        r.AbortReason.Should().Be($"{expected} (Win32 {error})");
+    }
+
+    [Fact]
+    public async Task Write_protected_media_returns_read_only()
+    {
+        // 例如：SD 卡写保护开关打开、只读光盘
+        var native = Substitute.For<INativeFileMove>();
+        native.Move(Src, Dst).Returns(Win32Errors.WriteProtect);
+        (await With(native).MoveAsync(Src, Dst)).Should().Be(new MoveResult.Skipped(Src, SkipReason.ReadOnly, 19));
+    }
+
+    [Theory]
+    [InlineData(Win32FileAttributes.RecallOnDataAccess)]
+    [InlineData(Win32FileAttributes.RecallOnOpen)]
+    [InlineData(Win32FileAttributes.Offline)]
+    [InlineData(Win32FileAttributes.Offline | 0x21u)]
+    public async Task Cloud_only_attributes_skip_without_native_move(uint attributes)
+    {
+        _fs.Attributes[Src] = attributes;
+        var native = Substitute.For<INativeFileMove>();
+        var r = (MoveResult.Skipped)await With(native).MoveAsync(Src, Dst);
+        r.Should().Be(new MoveResult.Skipped(Src, SkipReason.CloudOnly));
+        r.NativeErrorCode.Should().BeNull();
+        r.AbortReason.Should().Be("CloudOnly");
+        native.DidNotReceiveWithAnyArgs().Move(default!, default!);
+    }
+
+    [Fact]
+    public async Task Public_desktop_item_skips_needs_admin_without_native_move()
+    {
+        var native = Substitute.For<INativeFileMove>();
+        (await With(native).MoveAsync("/PUBLIC/Desktop/app.lnk", Dst))
+            .Should().Be(new MoveResult.Skipped("/PUBLIC/Desktop/app.lnk", SkipReason.NeedsAdmin));
+        native.DidNotReceiveWithAnyArgs().Move(default!, default!);
+    }
+
+    [Theory]
+    [InlineData("/public/desktop/a.lnk", "/public/desktop", true)]
+    [InlineData("/public/desktop/a.lnk", "/public/desktop/", true)]
+    [InlineData("/public/desktopx/a.lnk", "/public/desktop", false)]
+    [InlineData("/public/desktop", "/public/desktop", false)]
+    [InlineData("/public/desktop/a.lnk", "", false)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    public void Is_under(string path, string folder, bool expected) =>
+        RenamingFileMover.IsUnder(path, folder).Should().Be(expected);
+
+    [Fact]
+    public async Task Missing_attributes_proceed_to_native_move_then_not_found()
+    {
+        (await Mover.MoveAsync("/desk/gone.txt", Dst))
+            .Should().Be(new MoveResult.Skipped("/desk/gone.txt", SkipReason.NotFound, Win32Errors.FileNotFound));
     }
 
     [Fact]
@@ -174,7 +234,7 @@ public class JournaledMoveTests
         var journal = Substitute.For<IJournal>();
         JournalEntry? pending = null;
         await journal.AppendPendingAsync(Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
-        var sut = new JournaledMove(new RenamingFileMover(fs, _ => false), journal, TimeProvider.System);
+        var sut = new JournaledMove(new RenamingFileMover(fs, fs, fs), journal, TimeProvider.System);
         var job = Guid.NewGuid();
 
         var r = await sut.ExecuteAsync(job, "/d/notes.txt", "/v/notes.txt");
@@ -183,18 +243,18 @@ public class JournaledMoveTests
         pending!.JobId.Should().Be(job);
         pending.TargetPath.Should().Be("/v/notes.txt");
         await journal.Received(1).CommitAsync(pending.Id, "/v/notes (2).txt", Arg.Any<CancellationToken>());
-        await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default);
+        await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default, default!);
     }
 
     [Fact]
     public async Task Skipped_move_rolls_back()
     {
         var mover = Substitute.For<IFileMover>();
-        mover.MoveAsync("s", "t", Arg.Any<CancellationToken>()).Returns(new MoveResult.Skipped("s", SkipReason.Locked));
+        mover.MoveAsync("s", "t", Arg.Any<CancellationToken>()).Returns(new MoveResult.Skipped("s", SkipReason.NeedsAdmin, 5));
         var journal = Substitute.For<IJournal>();
         var r = await new JournaledMove(mover, journal, TimeProvider.System).ExecuteAsync(Guid.NewGuid(), "s", "t");
         r.Should().BeOfType<MoveResult.Skipped>();
-        await journal.Received(1).RollBackAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await journal.Received(1).RollBackAsync(Arg.Any<Guid>(), "NeedsAdmin (Win32 5)", Arg.Any<CancellationToken>());
         await journal.DidNotReceiveWithAnyArgs().CommitAsync(default, default!);
     }
 }

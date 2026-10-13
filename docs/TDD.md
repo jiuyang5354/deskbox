@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.1
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.2
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -27,6 +27,9 @@ flowchart TD
 - `IFileIdentity`：卷序列号 + 128 位文件 ID。
 - `IFileMover`：同分区安全移动，返回 `MoveResult`：`Moved(Source, Target, Renamed)` 或 `Skipped(Reason)`，Reason ∈ Locked、ReadOnly、CrossVolume、CloudOnly、NeedsAdmin、NotFound、NameConflict、IoError。
 - `INativeFileMove`：原生不替换移动的抽象（返回 Win32 错误码），使改名算法可在 Linux 上单测。
+- `IFileSystemProbe`：读取文件属性、判断是否目录。
+- `IKnownFolders`：已知文件夹；`PublicDesktop` 在 Windows 上由 `SHGetKnownFolderPath(FOLDERID_PublicDesktop)` 解析。
+- `MoveResult.Skipped` 带可选 `NativeErrorCode`（原始 Win32 错误码，预检查跳过时为空）和 `AbortReason`（如 `NeedsAdmin (Win32 5)`），写入 Journal 中止原因和日志。
 - `IJournal`：Pending → Committed / RolledBack 预写日志。
 - `ISnapshotStore`：快照，保留 10 份。
 - `IMonitorService`：显示器指纹、DPI、拔插事件。
@@ -47,9 +50,24 @@ flowchart TD
 1. **不预先检查**目标是否存在（避免检查与移动之间的 TOCTOU 竞争），直接调用 `MoveFileExW(src, dst, 0)`：不带 `MOVEFILE_REPLACE_EXISTING`，也不带 `MOVEFILE_COPY_ALLOWED`（跨卷直接失败）。
 2. 返回 `ERROR_FILE_EXISTS(80)` / `ERROR_ALREADY_EXISTS(183)` 时，依次尝试 `name (n).ext`，n = 2..999（目录不拆扩展名；`.gitignore` 类无主名文件追加在末尾）。
 3. 999 仍冲突 → `Skipped(NameConflict)`。
-4. 错误码映射：32/33 → Locked（**仅此两种**）；2/3 → NotFound；5 → NeedsAdmin；17 → CrossVolume；19 → ReadOnly；362–406（云文件）→ CloudOnly；其余 → IoError。
-5. 成功时 `Moved.Renamed = (n > 1)`，UI 据此提示"已自动改名"。还原到被占用的原路径走同一算法。
-6. `JournaledMove`：Pending 记录意图路径；成功后 `Commit(actualTargetPath)` 记录**实际落盘路径**；跳过则 RollBack。
+4. 移动前预检查（命中则**不调用**原生移动，`NativeErrorCode` 为空）：
+   - 源文件属性含 `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS(0x400000)`、`RECALL_ON_OPEN(0x40000)` 或 `OFFLINE(0x1000)` → CloudOnly；
+   - 源路径位于公共桌面（`FOLDERID_PublicDesktop`）之下 → NeedsAdmin。
+5. 错误码映射（`NativeErrorCode` 保留原值）：
+
+| Win32 错误码 | 含义 | SkipReason | 说明 |
+|---|---|---|---|
+| 80 / 183 | FILE_EXISTS / ALREADY_EXISTS | —（改名重试） | 999 次用尽 → NameConflict（记 183） |
+| 32 / 33 | SHARING_VIOLATION / LOCK_VIOLATION | Locked | 仅此两种归为 Locked |
+| 2 / 3 | FILE_NOT_FOUND / PATH_NOT_FOUND | NotFound | |
+| 5 | ACCESS_DENIED | NeedsAdmin | 兜底；主路径为公共桌面预检查 |
+| 17 | NOT_SAME_DEVICE | CrossVolume | 不带 COPY_ALLOWED，跨卷直接失败 |
+| 19 | WRITE_PROTECT | ReadOnly | 写保护介质（SD 卡写保护、只读光盘等） |
+| 362–406 | ERROR_CLOUD_FILE_* | CloudOnly | 兜底；主路径为属性预检查 |
+| 其他 | — | IoError | |
+
+6. 成功时 `Moved.Renamed = (n > 1)`，UI 据此提示"已自动改名"。还原到被占用的原路径走同一算法。
+7. `JournaledMove`：Pending 记录意图路径；成功后 `Commit(actualTargetPath)` 记录**实际落盘路径**；跳过则 `RollBack(abortReason)`，中止原因含原始错误码。
 
 ### 4.2 整理任务状态机修订
 - `Cancel` 只允许在 Classifying（尚未动文件）；Created / Snapshotting / Applying 均不可取消。
