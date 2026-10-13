@@ -201,10 +201,20 @@ public class FenceCommandTests
     public async Task Delete_without_staging_fence_is_rejected_and_nothing_changes()
     {
         _fences.Rows.Remove(_staging.Id);
-        var r = await _sut.ExecuteAsync(new DeleteFenceCommand(_a.Id));
-        r.Should().Be(new CommandResult(CommandStatus.Rejected, FenceUiText.NoStagingFence));
+        var log = Substitute.For<IFenceLog>();
+        var sut = new FenceCommandHandler(_db, _fences, _items, Substitute.For<IMonitorService>(), Substitute.For<IVaultItemMover>(), _mode, log);
+        var confirm = Substitute.For<IUserConfirmation>();
+        confirm.Confirm(Arg.Any<string>()).Returns(true);
+        var o = await new FenceDeleteFlow(sut, confirm).RunAsync(_a.Id);
+
+        o.Result!.Status.Should().Be(CommandStatus.Rejected);
+        o.Notice.Should().Be("数据异常，未删除");
+        log.Received(1).StagingFenceMissing(_a.Id, 2);
         _fences.Rows.Should().ContainKey(_a.Id);
-        _items.Rows[_item.Id].FenceId.Should().Be(_a.Id);
+        _fences.Rows.Values.Should().NotContain(f => f.IsStaging, "删除时不重建暂存方框");
+        _items.Rows.Values.Should().OnlyContain(i => i.FenceId == _a.Id);
+        _items.Writes.Should().Be(0);
+        _native.DidNotReceiveWithAnyArgs().Move(default!, default!);
     }
 
     [Fact]

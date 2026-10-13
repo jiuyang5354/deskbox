@@ -203,7 +203,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - 拖动会话：`FenceDragSession`（拖动中只回调移窗口，松手 `Complete` 产生唯一一条命令，Esc `Cancel` 放回原位且不产生命令）；`ItemDragSession`（可放下高亮、拖到原方框 / 方框外 / Esc → 不产生命令）。
 - 第二实例：`Application/Startup/InstanceActivation` 把 `Activated` 封送到 `IUiDispatcher`（WPF 为 `Dispatcher.BeginInvoke`），再调 `IWindowActivator`。
 - 删除方框按第 4 条算**改归属**（架构师确认）：只读时 `DeleteFenceCommand` 返回 `ReadOnly`、菜单项置灰；重命名 / 透明度 / 折叠与改布局一样照常执行。
-- 删除方框（PM 决定）：界面先确认「方框里的 N 个文件会移到暂存方框，磁盘上的文件不动」（`FenceDeleteFlow` + `IUserConfirmation`）；命令在同一个 `BEGIN IMMEDIATE` 事务里先把该方框的 `fence_item` 全部改归属到暂存方框（排在暂存已有项之后，保持原相对顺序），再删方框行，不调 `MoveFileExW`。找不到暂存方框时拒绝。
+- 删除方框（PM 决定）：界面先确认「方框里的 N 个文件会移到暂存方框，磁盘上的文件不动」（`FenceDeleteFlow` + `IUserConfirmation`）；命令在同一个 `BEGIN IMMEDIATE` 事务里先把该方框的 `fence_item` 全部改归属到暂存方框（排在暂存已有项之后，保持原相对顺序），再删方框行，不调 `MoveFileExW`。找不到暂存方框属于数据异常：拒绝且不做任何修改，**不在删除时重建暂存方框**，写错误日志 `IFenceLog.StagingFenceMissing`，界面提示「数据异常，未删除」。
 - 确认框默认「取消」，Esc = 取消；空方框不弹确认直接删。实际移动数以事务内重新读到的为准，与确认时不同也照常执行、不二次确认，结果提示显示实际数。
 - 迁移 v3：`fence.collapsed INTEGER NOT NULL DEFAULT 0 CHECK (collapsed IN (0,1))`；新表 `fence_item(id PK, fence_id → fence ON DELETE CASCADE, file_path COLLATE NOCASE, file_id, is_public_desktop, sort_order)`，`ux_fence_item_file_path` 唯一、`ix_fence_item_fence_id_sort`。`ON DELETE CASCADE` 只作兜底：命令总是先改归属再删方框，正常路径下级联不会删到任何映射。
 - 交互状态截图：`DeskBox.Desktop.Tests/FenceUiScreenshotTests`（`Category=WindowsIntegration`）用 `RenderTargetBitmap` 渲染悬停、可放下高亮、禁用原因、Esc 还原四张 PNG，`windows-integration.yml` 上传为 artifact `fence-ui-screenshots`。

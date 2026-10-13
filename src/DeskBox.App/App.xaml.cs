@@ -52,7 +52,8 @@ public partial class App : System.Windows.Application
             FileMover = new GatedFileMover(FileMoverFactory.Create(), Mode);
             // 「移入收纳库」是方框界面唯一会移动文件的命令：走带日志的 JournaledMove，只读时由 GatedFileMover 拒绝（TDD §4.7 第 2、4 条）
             var journaled = new JournaledMove(db, FileMover, journal, new WindowsFileIdentity(), FileMoverFactory.CreateProbe(), log, TimeProvider.System);
-            var commands = new FenceCommandHandler(db, fenceStore, itemStore, monitors, new JournaledVaultMover(journaled, vaultDir), Mode);
+            var commands = new FenceCommandHandler(db, fenceStore, itemStore, monitors, new JournaledVaultMover(journaled, vaultDir), Mode,
+                new TraceFenceLog());
             var ui = new FenceUi(windowing, monitors, commands, new FenceBoard(db, fenceStore, itemStore), Mode);
             var embedder = Own(new DesktopEmbedder(db, fenceStore, windowing, monitors, ui, shell));
             embedder.Attached += async (_, _) => await RefreshUiAsync(ui);
@@ -103,6 +104,12 @@ public partial class App : System.Windows.Application
         public void ReadOnlyMode(string reason) =>
             MessageBox.Show($"{reason}。DeskBox 已进入只读模式：方框照常显示，但不会移动任何文件。请重启 DeskBox 再试。",
                 "DeskBox", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private sealed class TraceFenceLog : IFenceLog
+    {
+        public void StagingFenceMissing(Guid fenceId, int itemCount) =>
+            Trace.TraceError("StagingFenceMissing: 删除方框 {0}（{1} 个文件）时找不到暂存方框，已拒绝且未修改", fenceId, itemCount);
     }
 
     private sealed class TraceRecoveryLog : IRecoveryLog

@@ -9,6 +9,13 @@ using DeskBox.Domain.Geometry;
 
 namespace DeskBox.Application.Fences;
 
+/// <summary>方框命令的错误日志。</summary>
+public interface IFenceLog
+{
+    /// <summary>删除方框时找不到暂存方框（数据异常）：删除被拒绝，未做任何修改。</summary>
+    void StagingFenceMissing(Guid fenceId, int itemCount);
+}
+
 /// <summary>收纳库移动端口（由 <see cref="JournaledVaultMover"/> 用 <see cref="Files.JournaledMove"/> 实现）。</summary>
 public interface IVaultItemMover
 {
@@ -21,7 +28,7 @@ public interface IVaultItemMover
 /// 改归属与从方框移除只改 fence_item，不调用任何文件移动；只有 <see cref="VaultItemCommand"/> 经 <see cref="IVaultItemMover"/>。
 /// </summary>
 public sealed class FenceCommandHandler(IUnitOfWorkFactory db, IFenceStore fences, IFenceItemStore items,
-    IMonitorService monitors, IVaultItemMover vault, OperatingMode mode)
+    IMonitorService monitors, IVaultItemMover vault, OperatingMode mode, IFenceLog? log = null)
 {
     public Task<CommandResult> ExecuteAsync(MoveFenceCommand cmd, CancellationToken ct = default)
     {
@@ -70,7 +77,12 @@ public sealed class FenceCommandHandler(IUnitOfWorkFactory db, IFenceStore fence
             if (moving.Count > 0)
             {
                 var staging = (await fences.ListAsync(u, ct)).FirstOrDefault(f => f.IsStaging);
-                if (staging is null) return new CommandResult(CommandStatus.Rejected, FenceUiText.NoStagingFence);
+                if (staging is null)
+                {
+                    // 数据异常：不在删除时重建暂存方框，什么都不改
+                    log?.StagingFenceMissing(fence.Id, moving.Count);
+                    return new CommandResult(CommandStatus.Rejected, FenceUiText.NoStagingFence);
+                }
                 var existing = await items.ListByFenceAsync(u, staging.Id, ct);
                 var next = existing.Count == 0 ? 0 : existing.Max(i => i.SortOrder) + 1;
                 foreach (var item in moving.OrderBy(i => i.SortOrder))

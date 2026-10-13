@@ -7,7 +7,7 @@ public static class FenceUiText
     public const string PublicDesktopCannotVault = "公共桌面上的文件不能移入收纳库";
     public const string NotFound = "方框或文件已不存在";
     public const string NoOtherFence = "没有其他方框";
-    public const string NoStagingFence = "找不到暂存方框，无法安置方框里的文件";
+    public const string NoStagingFence = "数据异常，未删除";
 
     /// <summary>删除方框前的确认文案（PM 定）。</summary>
     public static string Deleted(int moved) => moved == 0 ? "方框已删除" : $"方框已删除，{moved} 个文件已移到暂存方框";
