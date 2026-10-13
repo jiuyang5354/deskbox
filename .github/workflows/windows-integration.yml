@@ -47,7 +47,7 @@ jobs:
 
           $executed = 0
           foreach ($f in $trxFiles) {
-            [xml]$xml = Get-Content -Raw $f.FullName
+            [xml]$xml = Get-Content -LiteralPath $f.FullName -Raw
             $ns = @{ t = 'http://microsoft.com/schemas/VisualStudio/TeamTest/2010' }
             $counters = Select-Xml -Xml $xml -XPath '//t:Counters' -Namespace $ns | ForEach-Object { $_.Node }
             if (-not $counters) { $counters = Select-Xml -Xml $xml -XPath '//Counters' | ForEach-Object { $_.Node } }
