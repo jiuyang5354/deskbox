@@ -23,7 +23,8 @@ public sealed record StartupResult(StartupOutcome Outcome, IReadOnlyList<Recover
 /// 锁、数据库、嵌入失败直接抛出，由启动入口决定退出。
 /// </summary>
 public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrapper database, IStagingSelfCheck staging, IStartupRecovery recovery,
-    IDesktopEnumerator desktop, IStartupEmbedder embedder, IStartupNotifier notifier, OperatingMode mode, IDesktopScanLog? scanLog = null)
+    IDesktopEnumerator desktop, IStartupEmbedder embedder, IStartupNotifier notifier, OperatingMode mode, IDesktopScanLog? scanLog = null,
+    Action? instanceAcquired = null)
 {
     public async Task<StartupResult> RunAsync(CancellationToken ct = default)
     {
@@ -32,6 +33,8 @@ public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrap
             instance.SignalRunningInstance();
             return new(StartupOutcome.SecondInstance, [], []);
         }
+        // 拿到单实例锁之后才打开落盘日志：第二实例不写 deskbox.log
+        instanceAcquired?.Invoke();
 
         await database.MigrateAsync(ct);
 

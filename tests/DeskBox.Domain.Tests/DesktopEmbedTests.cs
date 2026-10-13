@@ -158,6 +158,34 @@ internal sealed class FakeDesktop : IDesktopWindowTree, IDesktopWindowing, IShel
 
     public bool IsWindow(IntPtr hwnd) => _nodes.ContainsKey(hwnd);
 
+    /// <summary>模拟坐标换算出错：挂到父窗口下的窗口实际位置比请求的偏移这么多像素。</summary>
+    public int ConversionErrorPx { get; set; }
+
+    public ScreenRect WindowRect(IntPtr hwnd)
+    {
+        var r = Bounds.GetValueOrDefault(hwnd);
+        return Parent(hwnd) != IntPtr.Zero ? r with { X = r.X + ConversionErrorPx } : r;
+    }
+
+    /// <summary>24H2 上残留的隐藏顶层 WorkerW，Z 序紧跟在 Progman（持有 SHELLDLL_DefView）之后。</summary>
+    public IntPtr AddStaleTopLevelWorkerAfterProgman()
+    {
+        var h = New("WorkerW", IntPtr.Zero, visible: false);
+        _zOrder.Remove(h);
+        _zOrder.Insert(_zOrder.IndexOf(Progman) + 1, h);
+        return h;
+    }
+
+    /// <summary>模拟 WpfWindowActivator：恢复、激活、Topmost 切换——直接置顶，不经过兼容显示的 Z 序处理。</summary>
+    public int ForcedToFront { get; private set; }
+
+    public void ForceToFront(IntPtr hwnd)
+    {
+        ForcedToFront++;
+        _zOrder.Remove(hwnd);
+        _zOrder.Insert(0, hwnd);
+    }
+
     // ---- IDesktopWindowing ----
     public IntPtr GetParent(IntPtr hwnd) => Parent(hwnd);
 

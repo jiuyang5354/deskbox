@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using DeskBox.Application.Desktop;
@@ -47,6 +46,9 @@ public sealed class Win32DesktopWindowTree : IDesktopWindowTree
 
     public IntPtr Root(IntPtr hwnd) => GetAncestor(hwnd, GaRoot);
 
+    public ScreenRect WindowRect(IntPtr hwnd) =>
+        GetWindowRect(hwnd, out var r) ? new ScreenRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top) : default;
+
     public bool IsWindow(IntPtr hwnd) => NativeMethods.IsWindow(hwnd);
 
     public OsVersionInfo OsVersion { get; } = ReadOsVersion();
@@ -75,17 +77,18 @@ public sealed class Win32DesktopWindowTree : IDesktopWindowTree
 [SupportedOSPlatform("windows")]
 public sealed class Win32DesktopWindowing : IDesktopWindowing
 {
-    private static readonly ConcurrentDictionary<IntPtr, byte> Pinned = new();
+    /// <summary>进程内兼容显示窗口登记表；WM_NCDESTROY 时移除。</summary>
+    public static PinnedWindows Pinned { get; } = new();
 
-    /// <summary>该窗口是否处于兼容显示（钉在最底）。</summary>
-    public static bool IsPinned(IntPtr hwnd) => Pinned.ContainsKey(hwnd);
-
-    /// <summary>WM_WINDOWPOSCHANGING：lParam 指向 WINDOWPOS；被钉住的窗口任何改 Z 序的请求都改成 HWND_BOTTOM。</summary>
-    public static void FilterWindowPosChanging(IntPtr hwnd, IntPtr lParam)
+    /// <summary>
+    /// 方框窗口过程里对每条消息调用：WM_NCDESTROY 移除登记；WM_WINDOWPOSCHANGING（lParam 指向 WINDOWPOS）时，
+    /// 被钉住的窗口任何改 Z 序的请求都改成 HWND_BOTTOM。
+    /// </summary>
+    public static void OnWindowMessage(IntPtr hwnd, int msg, IntPtr lParam)
     {
-        if (lParam == IntPtr.Zero) return;
+        if (!Pinned.OnMessage(hwnd, msg) || lParam == IntPtr.Zero) return;
         var pos = Marshal.PtrToStructure<WindowPos>(lParam);
-        var (after, flags) = FallbackZOrder.Adjust(IsPinned(hwnd), pos.InsertAfter, pos.Flags);
+        var (after, flags) = FallbackZOrder.Adjust(true, pos.InsertAfter, pos.Flags);
         if (after == pos.InsertAfter && flags == pos.Flags) return;
         pos.InsertAfter = after;
         pos.Flags = flags;
@@ -117,13 +120,13 @@ public sealed class Win32DesktopWindowing : IDesktopWindowing
     {
         var ex = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
         if ((ex & WsExNoActivate) == 0) SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(ex | WsExNoActivate));
-        Pinned[hwnd] = 0;
+        Pinned.Pin(hwnd);
         SetWindowPos(hwnd, HwndBottom, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
     }
 
     public void Unpin(IntPtr hwnd)
     {
-        if (!Pinned.TryRemove(hwnd, out _)) return;
+        if (!Pinned.Unpin(hwnd)) return;
         var ex = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
         SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(ex & ~WsExNoActivate));
     }

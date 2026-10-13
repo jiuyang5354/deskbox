@@ -45,6 +45,10 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     internal static partial IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
 
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool GetWindowRect(IntPtr hwnd, out Rect rect);
+
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static partial bool ClientToScreen(IntPtr hwnd, ref Point point);

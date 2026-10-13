@@ -123,6 +123,9 @@ public interface IDesktopWindowTree
     /// <summary>GetAncestor(GA_ROOT)。</summary>
     IntPtr Root(IntPtr hwnd);
 
+    /// <summary>GetWindowRect：窗口实际所在的屏幕物理像素矩形（挂载后校验用，验证坐标换算）。</summary>
+    ScreenRect WindowRect(IntPtr hwnd);
+
     bool IsWindow(IntPtr hwnd);
 
     /// <summary>系统版本信息，只用于日志（CurrentBuild.UBR 与 DisplayVersion）；层级判断从不看版本号或 ProductName。</summary>
