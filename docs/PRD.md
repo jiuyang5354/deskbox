@@ -98,18 +98,18 @@ stateDiagram-v2
 
 日志中文件路径只记哈希 + 文件名。
 
-**跳过原因用户文案（v1.2.2）**：界面只显示下列文案，不显示枚举名；资源键对应 `Strings.resx` 中的 `SkipReason_<枚举名>`。
+**跳过原因用户文案（v1.2.2）**：界面只显示下列文案，不显示枚举名；资源键就是 `Strings.resx` 中的枚举名本身（不加前缀），`SkipReasonText` 按 `reason.ToString()` 查找。
 
 | 枚举 | Strings.resx 键 | 用户文案 |
 |---|---|---|
-| Locked | SkipReason_Locked | 文件正被其他程序使用 |
-| CloudOnly | SkipReason_CloudOnly | 这是 OneDrive 云端文件，还没下载到本机 |
-| NeedsAdmin | SkipReason_NeedsAdmin | 公共桌面上的文件需要管理员权限 |
-| NotFound | SkipReason_NotFound | 文件已被删除或移走 |
-| CrossVolume | SkipReason_CrossVolume | 收纳库和桌面不在同一个磁盘上 |
-| ReadOnly | SkipReason_ReadOnly | 磁盘处于写保护状态 |
-| NameConflict | SkipReason_NameConflict | 同名文件太多，无法自动改名 |
-| IoError | SkipReason_IoError | 未知错误，详情见日志 |
+| Locked | Locked | 文件正被其他程序使用 |
+| CloudOnly | CloudOnly | 这是 OneDrive 云端文件，还没下载到本机 |
+| NeedsAdmin | NeedsAdmin | 公共桌面上的文件需要管理员权限 |
+| NotFound | NotFound | 文件已被删除或移走 |
+| CrossVolume | CrossVolume | 收纳库和桌面不在同一个磁盘上 |
+| ReadOnly | ReadOnly | 磁盘处于写保护状态 |
+| NameConflict | NameConflict | 同名文件太多，无法自动改名 |
+| IoError | IoError | 未知错误，详情见日志 |
 
 **Lost 提示（v1.2.2）**：原文为"有 {count} 个文件在上次整理中断后没能找回：{fileNames}。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。"（count 与文件名为变量，示例："有 1 个文件在上次整理中断后没能找回：notes.txt。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。"）。启动时弹窗显示一次；之后常驻在 **设置 > 整理记录**，直到用户点击"知道了"。
 
