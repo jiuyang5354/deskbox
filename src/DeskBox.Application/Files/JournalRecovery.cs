@@ -1,6 +1,5 @@
 using DeskBox.Application.Ports;
 using DeskBox.Domain.Entities;
-using DeskBox.Domain.Files;
 
 namespace DeskBox.Application.Files;
 
@@ -75,6 +74,7 @@ public sealed class JournalRecovery(IUnitOfWorkFactory db, IJournal journal, IFi
     {
         var failures = 0;
         var lost = false;
+        Exception? secondary = null;
         try
         {
             (failures, lost) = await db.InTransactionAsync(async u =>
@@ -87,13 +87,17 @@ public sealed class JournalRecovery(IUnitOfWorkFactory db, IJournal journal, IFi
         }
         catch (Exception inner) when (inner is not OperationCanceledException)
         {
-            // 连失败计数都写不进去：保持原样，下次启动再试；日志里带上最初的异常
+            // 连失败计数都写不进去：数据保持原样，下次启动再试；两个异常都写进日志
+            secondary = inner;
         }
         log.RecoveryFailed(new RecoveryFailedEvent(e.Id, e.JobId, e.FileId, e.SourcePath, e.TargetPath,
-            failures, lost, ex.GetType().Name, ex.Message));
+            failures, lost, ex.GetType().Name, ex.Message, secondary?.GetType().Name, secondary?.Message));
         return new(e.Id, lost ? RecoveryOutcome.Lost : RecoveryOutcome.Failed, null);
     }
 
     private bool Is(string path, string fileId) =>
-        WinPath.PathEquals(identity.TryGetFileId(path), fileId);
+        FileIdEquals(identity.TryGetFileId(path), fileId);
+
+    /// <summary>file_id 是 "卷序列号:128 位 ID" 的十六进制串，按序号不区分大小写比较（不是路径，不走 WinPath）。</summary>
+    internal static bool FileIdEquals(string? a, string? b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 }

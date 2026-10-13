@@ -130,9 +130,11 @@ public interface ILostFileNoticeStore
 public sealed record UncertainPendingEvent(Guid EntryId, Guid JobId, string FileId, string SourcePath,
     string CandidatePath, int Attempt, string ExceptionType, string Message);
 
-/// <summary>启动恢复时某条 Pending 处理失败（保持 Pending，下次启动重试；连续 3 次转 Lost）。</summary>
+/// <summary>启动恢复时某条 Pending 处理失败（保持 Pending，下次启动重试；连续 3 次转 Lost）。
+/// Secondary* 为写失败计数本身也失败时的异常（此时 ConsecutiveFailures 为 0，未持久化）。</summary>
 public sealed record RecoveryFailedEvent(Guid EntryId, Guid JobId, string FileId, string SourcePath,
-    string CandidatePath, int ConsecutiveFailures, bool MarkedLost, string ExceptionType, string Message);
+    string CandidatePath, int ConsecutiveFailures, bool MarkedLost, string ExceptionType, string Message,
+    string? SecondaryExceptionType = null, string? SecondaryMessage = null);
 
 public interface IRecoveryLog
 {

@@ -245,6 +245,56 @@ public class RecoveryTransactionTests
     }
 
     [Fact]
+    public async Task Failure_count_write_error_is_logged_as_secondary_not_swallowed()
+    {
+        var w = new World();
+        var e = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"E:\desk\a.txt", @"C:\vault\a.txt", default);
+        w.Fs.Broken.Add(@"E:\desk\a.txt");
+        var journal = Substitute.For<IJournal>();
+        journal.GetPendingAsync(default!).ReturnsForAnyArgs(new[] { e });
+        journal.RecordRecoveryFailureAsync(default!, default).ReturnsForAnyArgs<Task<int>>(_ => throw new IOException("磁盘已满"));
+        var sut = new JournalRecovery(w.Db, journal, w.Fs, w.Fs, w.Records, w.Notices, w.Log, TimeProvider.System);
+
+        (await sut.RecoverAsync()).Single().Should().Be(new RecoveredEntry(e.Id, RecoveryOutcome.Failed, null));
+
+        w.Log.Received(1).RecoveryFailed(new RecoveryFailedEvent(e.Id, e.JobId, IdA.ToUpperInvariant(), @"E:\desk\a.txt",
+            @"C:\vault\a.txt", 0, false, nameof(IOException), "设备未就绪", nameof(IOException), "磁盘已满"));
+        e.Status.Should().Be(JournalStatus.Pending);
+        w.Db.Rollbacks.Should().Be(1, "写失败计数的事务被回滚");
+    }
+
+    [Fact]
+    public async Task Successful_failure_count_has_no_secondary_info()
+    {
+        var w = new World();
+        w.Seed(IdA, @"E:\desk\a.txt", @"C:\vault\a.txt");
+        w.Fs.Broken.Add(@"E:\desk\a.txt");
+        await w.Recovery().RecoverAsync();
+        w.Log.Received(1).RecoveryFailed(Arg.Is<RecoveryFailedEvent>(x =>
+            x.ConsecutiveFailures == 1 && x.SecondaryExceptionType == null && x.SecondaryMessage == null));
+    }
+
+    [Theory]
+    [InlineData("1a2b3c4d:000000000000000000000000000000AA", "1a2b3c4d:000000000000000000000000000000aa", true)]
+    [InlineData("1A2B3C4D:00", "1a2b3c4d:00", true)]
+    [InlineData("1a2b3c4d:aa", "1a2b3c4d:ab", false)]
+    [InlineData("1a2b3c4d/aa", "1a2b3c4d\\aa", false)] // 不是路径：分隔符不等价
+    [InlineData(null, "1a2b3c4d:aa", false)]
+    [InlineData(null, null, true)]
+    public void File_id_equality_is_ordinal_ignore_case_not_path_semantics(string? a, string? b, bool expected) =>
+        JournalRecovery.FileIdEquals(a, b).Should().Be(expected);
+
+    [Fact]
+    public async Task Lower_case_file_id_from_probe_matches_entry()
+    {
+        var w = new World();
+        var a = w.Seed(IdA, @"C:\desk\a.txt", @"C:\vault\a.txt");
+        w.Fs.Files[@"C:\vault\a.txt"] = IdA.ToLowerInvariant();
+        (await w.Recovery().RecoverAsync()).Single().Outcome.Should().Be(RecoveryOutcome.CommittedAtCandidate);
+        a.Status.Should().Be(JournalStatus.Committed);
+    }
+
+    [Fact]
     public void Recovery_failure_counter_only_on_pending()
     {
         var e = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, "s", "t", default);
