@@ -53,43 +53,30 @@ public sealed class SqliteJournal : IJournal
 {
     private const string Pending = nameof(JournalStatus.Pending);
 
-    /// <summary>
-    /// 在 SAVEPOINT 里插入：只有命中 <see cref="SqliteSchema.JournalPendingIndex"/> 的唯一冲突
-    /// 才回滚到保存点并抛 <see cref="JournalConflictException"/>，工作单元仍可继续使用；其他错误原样抛出。
-    /// </summary>
-    public async Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default)
+    /// <summary>file_id 一律以大写保存（实体构造时已规范化），这里同样转大写比较，等价于 OrdinalIgnoreCase，且能用上 ux_journal_pending_file_id。</summary>
+    public async Task<bool> HasPendingAsync(IUnitOfWork uow, string fileId, CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(entry);
-        var s = SqliteUnitOfWork.From(uow);
-        await s.ExecuteAsync("SAVEPOINT append_pending;", ct);
-        try
-        {
-            await s.ExecuteAsync(
-                """
-                INSERT INTO journal (id, job_id, file_id, source_path, target_path, attempt, status, actual_target_path, abort_reason, recovery_failures, created_at)
-                VALUES ($id, $job, $fid, $src, $dst, $attempt, $status, $actual, $reason, $failures, $created);
-                """, ct,
-                ("$id", Sql.Id(entry.Id)), ("$job", Sql.Id(entry.JobId)), ("$fid", entry.FileId), ("$src", entry.SourcePath),
-                ("$dst", entry.TargetPath), ("$attempt", entry.Attempt), ("$status", entry.Status.ToString()),
-                ("$actual", entry.ActualTargetPath), ("$reason", entry.AbortReason), ("$failures", entry.RecoveryFailures),
-                ("$created", Sql.Time(entry.CreatedAt)));
-        }
-        catch (SqliteException ex) when (IsPendingConflict(ex))
-        {
-            await s.ExecuteAsync("ROLLBACK TO append_pending;", ct);
-            await s.ExecuteAsync("RELEASE append_pending;", ct);
-            throw new JournalConflictException(entry.FileId, ex);
-        }
-        await s.ExecuteAsync("RELEASE append_pending;", ct);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fileId);
+        var r = await SqliteUnitOfWork.From(uow).RunAsync(
+            $"SELECT 1 FROM journal WHERE file_id = $fid AND status = '{Pending}' LIMIT 1;",
+            c => c.ExecuteScalarAsync(ct), ("$fid", fileId.ToUpperInvariant()));
+        return r is not null;
     }
 
-    internal const int SqliteConstraintUnique = 2067;
-
-    /// <summary>仅 SQLITE_CONSTRAINT_UNIQUE 且消息点名 Pending 部分唯一索引（或其列）。</summary>
-    internal static bool IsPendingConflict(SqliteException ex) =>
-        ex.SqliteExtendedErrorCode == SqliteConstraintUnique &&
-        (ex.Message.Contains(SqliteSchema.JournalPendingIndex, StringComparison.Ordinal) ||
-         ex.Message.Contains("UNIQUE constraint failed: journal.file_id", StringComparison.Ordinal));
+    /// <summary>普通插入；主键或 Pending 部分唯一索引冲突都作为 SqliteException 抛出。</summary>
+    public Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        return SqliteUnitOfWork.From(uow).ExecuteAsync(
+            """
+            INSERT INTO journal (id, job_id, file_id, source_path, target_path, attempt, status, actual_target_path, abort_reason, recovery_failures, created_at)
+            VALUES ($id, $job, $fid, $src, $dst, $attempt, $status, $actual, $reason, $failures, $created);
+            """, ct,
+            ("$id", Sql.Id(entry.Id)), ("$job", Sql.Id(entry.JobId)), ("$fid", entry.FileId), ("$src", entry.SourcePath),
+            ("$dst", entry.TargetPath), ("$attempt", entry.Attempt), ("$status", entry.Status.ToString()),
+            ("$actual", entry.ActualTargetPath), ("$reason", entry.AbortReason), ("$failures", entry.RecoveryFailures),
+            ("$created", Sql.Time(entry.CreatedAt)));
+    }
 
     public async Task UpdateCandidateAsync(IUnitOfWork uow, Guid entryId, string candidatePath, int attempt, CancellationToken ct = default)
     {

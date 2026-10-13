@@ -17,7 +17,7 @@ public class AlreadyInProgressTests
         var identity = Substitute.For<IFileIdentity>();
         identity.TryGetFileId(@"C:\desk\a.txt").Returns(Id);
         var journal = Substitute.For<IJournal>();
-        journal.AppendPendingAsync(default!, default!, default).ReturnsForAnyArgs<Task>(_ => throw new JournalConflictException(Id.ToUpperInvariant()));
+        journal.HasPendingAsync(Arg.Any<IUnitOfWork>(), Id.ToUpperInvariant(), Arg.Any<CancellationToken>()).Returns(true);
         var mover = Substitute.For<IFileMover>();
         var log = Substitute.For<IRecoveryLog>();
         var sut = new JournaledMove(new FakeDb(), mover, journal, identity, log, TimeProvider.System);
@@ -27,6 +27,7 @@ public class AlreadyInProgressTests
         r.Should().Be(new MoveResult.Skipped(@"C:\desk\a.txt", SkipReason.AlreadyInProgress));
         ((MoveResult.Skipped)r).AbortReason.Should().Be("AlreadyInProgress");
         mover.ReceivedCalls().Should().BeEmpty("检查在 MoveFileExW 之前");
+        await journal.DidNotReceiveWithAnyArgs().AppendPendingAsync(default!, default!, default);
         await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default!, default, default!, default);
         await journal.DidNotReceiveWithAnyArgs().CommitAsync(default!, default, default!, default);
         log.ReceivedCalls().Should().BeEmpty();
@@ -44,12 +45,18 @@ public class AlreadyInProgressTests
     }
 
     [Fact]
-    public void Conflict_exception_carries_file_id()
+    public async Task Precheck_and_append_share_one_transaction()
     {
-        var inner = new InvalidOperationException("x");
-        var e = new JournalConflictException("F", inner);
-        (e.FileId, e.InnerException).Should().Be(("F", inner));
-        e.Message.Should().Contain("F");
-        new JournalConflictException("G").InnerException.Should().BeNull();
+        var db = new FakeDb();
+        var journal = new InMemoryJournal();
+        var identity = Substitute.For<IFileIdentity>();
+        identity.TryGetFileId(Arg.Any<string>()).Returns(Id);
+        var mover = Substitute.For<IFileMover>();
+        mover.MoveAsync(default!, default!, default, default).ReturnsForAnyArgs(new MoveResult.Skipped("s", SkipReason.Locked, 32));
+        var sut = new JournaledMove(db, mover, journal, identity, Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        await sut.ExecuteAsync(Guid.NewGuid(), "s", "t");
+        db.Commits.Should().Be(2, "Begin（查 + 写）一个事务，RollBack 一个事务");
+        (await sut.ExecuteAsync(Guid.NewGuid(), "s", "t")).Should().BeOfType<MoveResult.Skipped>()
+            .Which.Reason.Should().Be(SkipReason.Locked, "上一条已 RolledBack，不再算进行中");
     }
 }

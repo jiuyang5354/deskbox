@@ -198,14 +198,37 @@ public sealed class StoreTests : IAsyncLifetime
 
     // ---------- 架构评审：约束与时间格式 ----------
     [Fact]
-    public async Task Second_pending_for_same_file_id_is_a_typed_conflict_and_allowed_after_completion()
+    public async Task Only_unique_index_on_journal_covering_file_id_is_the_pending_partial_index()
+    {
+        var rows = await _t.Tx(u => SqliteUnitOfWork.From(u).RunAsync(
+            """
+            SELECT il.name, il."unique", il.partial, ii.name FROM pragma_index_list('journal') il
+            JOIN pragma_index_info(il.name) ii WHERE il."unique" = 1;
+            """, c => Sql.ListAsync(c, r => (Index: r.GetString(0), Partial: r.GetInt64(2), Column: r.GetString(3)), default)));
+        rows.Where(r => r.Column == "file_id").Should().ContainSingle()
+            .Which.Should().Be((SqliteSchema.JournalPendingIndex, 1L, "file_id"));
+        (await _t.Scalar<string>($"SELECT sql FROM sqlite_master WHERE name = '{SqliteSchema.JournalPendingIndex}';"))
+            .Should().Contain("WHERE status = 'Pending'");
+    }
+
+    [Fact]
+    public async Task Has_pending_is_case_insensitive_and_only_counts_pending()
+    {
+        var e = await Seed(IdA);
+        (await _t.Tx(u => _journal.HasPendingAsync(u, IdA.ToLowerInvariant()))).Should().BeTrue();
+        (await _t.Tx(u => _journal.HasPendingAsync(u, IdB))).Should().BeFalse();
+        await _t.Tx(u => _journal.CommitAsync(u, e.Id, @"C:\vault\a.txt"));
+        (await _t.Tx(u => _journal.HasPendingAsync(u, IdA))).Should().BeFalse();
+        await FluentActions.Awaiting(() => _t.Tx(u => _journal.HasPendingAsync(u, " "))).Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task Direct_insert_of_second_pending_bypassing_precheck_throws_unique_error()
     {
         var first = await Seed(IdA, @"C:\vault\a.txt");
         var again = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"C:\desk\a.txt", @"C:\vault\a (2).txt", T0);
-        var ex = (await FluentActions.Awaiting(() => _t.Tx(u => _journal.AppendPendingAsync(u, again)))
-            .Should().ThrowAsync<JournalConflictException>()).Which;
-        ex.FileId.Should().Be(IdA);
-        ex.InnerException.Should().BeOfType<SqliteException>().Which.SqliteExtendedErrorCode.Should().Be(2067);
+        (await FluentActions.Awaiting(() => _t.Tx(u => _journal.AppendPendingAsync(u, again))).Should().ThrowAsync<SqliteException>())
+            .Which.SqliteExtendedErrorCode.Should().Be(2067, "SQLITE_CONSTRAINT_UNIQUE，按错误抛出");
         (await Load(first.Id))!.Status.Should().Be(JournalStatus.Pending, "另一条 Pending 不受影响");
 
         await _t.Tx(u => _journal.CommitAsync(u, first.Id, @"C:\vault\a.txt"));
@@ -214,36 +237,6 @@ public sealed class StoreTests : IAsyncLifetime
         await Seed(IdA, @"C:\vault\a (3).txt"); // 提交 / 回滚之后都可以再开新的 Pending
         (await _t.Scalar<long>("SELECT COUNT(*) FROM journal WHERE file_id = '" + IdA + "';")).Should().Be(3);
     }
-
-    [Fact]
-    public async Task Conflict_rolls_back_only_to_savepoint_and_unit_of_work_keeps_working()
-    {
-        await Seed(IdA, @"C:\vault\a.txt");
-        var b = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdB, @"C:\desk\b.txt", @"C:\vault\b.txt", T0);
-        var c = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "1A2B3C4D:000000000000000000000000000000CC", @"C:\desk\c.txt", @"C:\vault\c.txt", T0);
-        var dup = new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), IdA, @"C:\desk\a.txt", @"C:\vault\a.txt", T0);
-        await _t.Tx(async u =>
-        {
-            await _journal.AppendPendingAsync(u, b); // 同一事务里冲突之前写的
-            await FluentActions.Awaiting(() => _journal.AppendPendingAsync(u, dup)).Should().ThrowAsync<JournalConflictException>();
-            await _journal.AppendPendingAsync(u, c); // 冲突之后同一工作单元继续写其他文件
-        });
-        (await _t.Tx(u => _journal.GetPendingAsync(u))).Select(e => e.FileId).Should().BeEquivalentTo(new[] { IdA, IdB, c.FileId });
-        (await Load(dup.Id)).Should().BeNull();
-    }
-
-    [Fact]
-    public void Only_unique_2067_on_pending_index_maps_to_conflict()
-    {
-        StoreTests.Ex(2067, "SQLite Error 19: 'UNIQUE constraint failed: journal.file_id'.").Should().BeTrue();
-        StoreTests.Ex(2067, $"SQLite Error 19: 'UNIQUE constraint failed: index '{SqliteSchema.JournalPendingIndex}''.").Should().BeTrue();
-        StoreTests.Ex(2067, "SQLite Error 19: 'UNIQUE constraint failed: vault_record.vault_path'.").Should().BeFalse();
-        StoreTests.Ex(1555, "SQLite Error 19: 'UNIQUE constraint failed: journal.id'.").Should().BeFalse("主键冲突 = 1555");
-        StoreTests.Ex(787, "FOREIGN KEY constraint failed").Should().BeFalse();
-    }
-
-    private static bool Ex(int extended, string message) =>
-        SqliteJournal.IsPendingConflict(new SqliteException(message, 19, extended));
 
     [Fact]
     public async Task Other_unique_violation_in_vault_record_propagates_as_error()

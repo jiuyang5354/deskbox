@@ -56,19 +56,12 @@ public interface IUnitOfWorkFactory
     Task<IUnitOfWork> BeginAsync(CancellationToken ct = default);
 }
 
-/// <summary>
-/// 写入 Pending 时，同一 file_id 已有一条 Pending（journal 上 file_id 的部分唯一索引）。
-/// 由 <see cref="IJournal.AppendPendingAsync"/> 抛出；调用方据此返回 Skipped(AlreadyInProgress)，不是错误。
-/// </summary>
-public sealed class JournalConflictException(string fileId, Exception? inner = null)
-    : Exception($"file_id {fileId} 已有未完成的移动", inner)
-{
-    public string FileId { get; } = fileId;
-}
-
 /// <summary>移动操作预写日志，崩溃后可恢复。所有操作都在调用方的工作单元内执行。</summary>
 public interface IJournal
 {
+    /// <summary>该 file_id（不区分大小写）是否已有 Pending。Begin 时与 Append 在同一事务里先查后写。</summary>
+    Task<bool> HasPendingAsync(IUnitOfWork uow, string fileId, CancellationToken ct = default);
+    /// <summary>写入 Pending。任何约束冲突都按错误抛出（调用方应先 <see cref="HasPendingAsync"/>）。</summary>
     Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default);
     /// <summary>每次原生移动尝试之前持久化候选目标路径与尝试序号。</summary>
     Task UpdateCandidateAsync(IUnitOfWork uow, Guid entryId, string candidatePath, int attempt, CancellationToken ct = default);
