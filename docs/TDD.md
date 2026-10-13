@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.9
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.10
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -56,7 +56,8 @@ flowchart TD
 3. 999 仍冲突 → `Skipped(NameConflict)`。
 4. 移动前预检查（命中则**不调用**原生移动，`NativeErrorCode` 为空）：
    - 源文件属性含 `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS(0x400000)`、`RECALL_ON_OPEN(0x40000)` 或 `OFFLINE(0x1000)` → CloudOnly；
-   - 源路径位于公共桌面（`FOLDERID_PublicDesktop`）之下 → NeedsAdmin。
+   - 源路径位于公共桌面（`FOLDERID_PublicDesktop`）之下 → NeedsAdmin；
+   - 源与目标不同卷（`WinPath.IsCrossVolume`，比较盘符 / UNC `server\share`）→ CrossVolume，**不复制**。
 5. 错误码映射（`NativeErrorCode` 保留原值）：
 
 | Win32 错误码 | 含义 | SkipReason | 说明 |
@@ -65,7 +66,7 @@ flowchart TD
 | 32 / 33 | SHARING_VIOLATION / LOCK_VIOLATION | Locked | 仅此两种归为 Locked |
 | 2 / 3 | FILE_NOT_FOUND / PATH_NOT_FOUND | NotFound | |
 | 5 | ACCESS_DENIED | NeedsAdmin | 兜底；主路径为公共桌面预检查 |
-| 17 | NOT_SAME_DEVICE | CrossVolume | 不带 COPY_ALLOWED，跨卷直接失败 |
+| 17 | NOT_SAME_DEVICE | CrossVolume | 兜底；主路径为 `WinPath.IsCrossVolume` 预检查；不带 COPY_ALLOWED |
 | 19 | WRITE_PROTECT | ReadOnly | 写保护介质（SD 卡写保护、只读光盘等） |
 | 362–406 | ERROR_CLOUD_FILE_* | CloudOnly | 兜底；主路径为属性预检查 |
 | 其他 | — | IoError | |
@@ -176,7 +177,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   3. 拔掉方框所在显示器：方框完整出现在主显示器工作区；接回后回到原显示器原位置；
   4. 100% / 150% / 200% 缩放下拖动并重启 DeskBox，位置不漂移。
 
-### 4.6 应用启动顺序（v1.0.9，启动接入）
+### 4.6 应用启动顺序（v1.0.10，启动接入 + 收纳库路径）
 组合根只在 `DeskBox.App/App.xaml.cs`（`OnStartup`）：只有这里 new 基础设施对象（SQLite、Win32、WPF 窗口），其他层只依赖 Application 端口。顺序由 `Application/Startup/StartupSequence` 保证，严格为：
 1. **单实例**：`ISingleInstance`（`NamedMutexSingleInstance`，`Local\DeskBox.<用户 SID>.mutex`）。抢不到锁 → `Set` 同名事件 `…activate` 通知已运行的实例（触发 `Activated`）→ 返回 `SecondInstance`，入口 `Shutdown(0)`。此时**未**打开数据库、未碰任何文件。
 2. **数据库**：`IDatabaseBootstrapper`（`SqliteDatabaseBootstrapper`）建目录 `%LOCALAPPDATA%\DeskBox` 并 `SqliteSchema.MigrateAsync`；版本过高抛出，入口提示后退出。
@@ -185,7 +186,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 5. **嵌入**：`IStartupEmbedder`（`DesktopEmbedder.StartAsync`）从数据库读方框，嵌入 WorkerW 或降级置底。只读模式下照常显示方框。
 
 **测试**（`StartupSequenceTests`，假组件记录调用顺序）：正常为 `mutex → migrate → recover → enumerate → embed`，恢复严格早于枚举与嵌入；第二实例只有 `mutex → signal`；恢复异常 / 有 `Failed` 条目 → 只读、提示、无枚举；取消不被吞且不嵌入；只读时 `GatedFileMover` 不调用内部移动器。`BootstrapperTests` 覆盖建目录 + 迁移可重复。
-- 已知限制：收纳库目录暂定 `%LOCALAPPDATA%\DeskBox\Vault`（PRD 未定义位置，若与桌面不同盘会全部 CrossVolume 跳过），待 PM 确认。单实例的“带到前台”目前只触发 `Activated` 事件，UI 响应在任务 5 实现。
+- 收纳库默认路径：`%USERPROFILE%\DeskBox\Vault`（PRD v1.2.4）。组合根在启动时若目录不存在则创建；数据库与日志仍在 `%LOCALAPPDATA%\DeskBox`。与桌面不同盘时由 `WinPath.IsCrossVolume` 预检查返回 CrossVolume、不复制。未正式发布，不做从旧 `%LOCALAPPDATA%\DeskBox\Vault` 的迁数据，旧路径残留文件忽略。单实例的“带到前台”目前只触发 `Activated` 事件，UI 响应在任务 5 实现。
 
 ### 4.4 SQLite 持久化（v1.0.6，DeskBox.Infrastructure.Core）
 `DeskBox.Infrastructure.Core` 目标框架为 `net8.0`，不依赖 WPF，所以集成测试能在任何宿主上对真实 SQLite 文件运行。Windows 专用的部分用 `[SupportedOSPlatform("windows")]` 标注。

@@ -7,7 +7,8 @@ namespace DeskBox.Application.Files;
 /// 安全移动：不预先检查目标是否存在（避免 TOCTOU 竞争），直接做不替换移动；
 /// 目标已存在则依次尝试 "name (n).ext"（n=2..999），用尽返回 Skipped(NameConflict)。
 /// </summary>
-/// 预检查（不调用原生移动）：仅云端文件 → CloudOnly；位于公共桌面（两侧路径规范化后比较）→ NeedsAdmin。
+/// 预检查（不调用原生移动）：仅云端文件 → CloudOnly；位于公共桌面（两侧路径规范化后比较）→ NeedsAdmin；
+/// 源与目标不同卷（<see cref="WinPath.IsCrossVolume"/>）→ CrossVolume，不复制。
 public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe probe, IKnownFolders folders) : IFileMover
 {
     public Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default) =>
@@ -29,6 +30,8 @@ public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe p
             return new MoveResult.Skipped(source, SkipReason.CloudOnly);
         if (IsUnder(source, folders.PublicDesktop))
             return new MoveResult.Skipped(source, SkipReason.NeedsAdmin);
+        if (WinPath.IsCrossVolume(source, target))
+            return new MoveResult.Skipped(source, SkipReason.CrossVolume);
         var dir = probe.IsDirectory(source);
         for (var n = 1; n <= ConflictNaming.MaxIndex; n++)
         {

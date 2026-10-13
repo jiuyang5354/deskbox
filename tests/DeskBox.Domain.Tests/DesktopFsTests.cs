@@ -113,19 +113,18 @@ public class DesktopFsTests
         native.Received(1).Move(Src, Dst); // 不预先打开探测，第一次调用就是移动本身
     }
 
-    // ---------- (3) 跨分区：17 立即跳过，不复制、不重试 ----------
+    // ---------- (3) 跨分区：同盘预检查立即 CrossVolume，不调用原生、不复制 ----------
     [Fact]
     public async Task Cross_volume_skips_immediately_without_copy_or_retry()
     {
         var native = Substitute.For<INativeFileMove>();
-        native.Move(Src, @"D:\Vault\a.txt").Returns(Win32Errors.NotSameDevice);
         var sut = new JournaledMove(_db, new RenamingFileMover(native, Probe(0x20), Folders()), _journal, Identity(), Probe(0x20), _log, TimeProvider.System);
 
         var r = await sut.ExecuteAsync(Guid.NewGuid(), Src, @"D:\Vault\a.txt");
 
-        r.Should().Be(new MoveResult.Skipped(Src, SkipReason.CrossVolume, 17));
-        native.ReceivedCalls().Should().ContainSingle("只尝试一次，不改名重试，也没有复制回退");
-        _journal.Entries.Values.Single().AbortReason.Should().Be("CrossVolume (Win32 17)");
+        r.Should().Be(new MoveResult.Skipped(Src, SkipReason.CrossVolume));
+        native.DidNotReceiveWithAnyArgs().Move(default!, default!);
+        _journal.Entries.Values.Single().AbortReason.Should().Be("CrossVolume");
     }
 
     // ---------- (4) 顺序：查重 + 写 Pending（同一事务）→ 写候选 → 移动 → Commit ----------
