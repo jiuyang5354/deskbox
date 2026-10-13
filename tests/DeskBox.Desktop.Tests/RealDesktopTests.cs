@@ -24,6 +24,7 @@ public sealed partial class RealDesktopTests
         public Task<IReadOnlyList<Fence>> ListAsync(IUnitOfWork uow, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<Fence>>(rows);
         public Task<Fence?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default) => Task.FromResult(rows.FirstOrDefault(f => f.Id == id));
         public Task UpsertAsync(IUnitOfWork uow, Fence fence, CancellationToken ct = default) => Task.CompletedTask;
+        public Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class NoDb : IUnitOfWorkFactory, IUnitOfWork

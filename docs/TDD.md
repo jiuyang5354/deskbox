@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.10
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.11
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -186,7 +186,26 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 5. **嵌入**：`IStartupEmbedder`（`DesktopEmbedder.StartAsync`）从数据库读方框，嵌入 WorkerW 或降级置底。只读模式下照常显示方框。
 
 **测试**（`StartupSequenceTests`，假组件记录调用顺序）：正常为 `mutex → migrate → recover → enumerate → embed`，恢复严格早于枚举与嵌入；第二实例只有 `mutex → signal`；恢复异常 / 有 `Failed` 条目 → 只读、提示、无枚举；取消不被吞且不嵌入；只读时 `GatedFileMover` 不调用内部移动器。`BootstrapperTests` 覆盖建目录 + 迁移可重复。
-- 收纳库默认路径：`%USERPROFILE%\DeskBox\Vault`（PRD v1.2.4）。组合根在启动时若目录不存在则创建；数据库与日志仍在 `%LOCALAPPDATA%\DeskBox`。与桌面不同盘时由 `WinPath.IsCrossVolume` 预检查返回 CrossVolume、不复制。未正式发布，不做从旧 `%LOCALAPPDATA%\DeskBox\Vault` 的迁数据，旧路径残留文件忽略。单实例的“带到前台”目前只触发 `Activated` 事件，UI 响应在任务 5 实现。
+- 收纳库默认路径：`%USERPROFILE%\DeskBox\Vault`（PRD v1.2.4）。组合根在启动时若目录不存在则创建；数据库与日志仍在 `%LOCALAPPDATA%\DeskBox`。与桌面不同盘时由 `WinPath.IsCrossVolume` 预检查返回 CrossVolume、不复制。未正式发布，不做从旧 `%LOCALAPPDATA%\DeskBox\Vault` 的迁数据，旧路径残留文件忽略。单实例的“带到前台”UI 响应见 §4.7 第 6 条。
+
+**§4.7 方框界面（任务 5）**
+1. **分层**：界面只发命令，所有操作都走 Application 层：`MoveFenceCommand`、`ResizeFenceCommand`、`ReassignItemCommand`、`RemoveItemCommand`、`RenameFenceCommand`、`SetFenceOpacityCommand`、`ToggleCollapseCommand`、`DeleteFenceCommand`、`VaultItemCommand`。界面层不引用数据库，也不直接调文件相关的 Win32 接口。
+2. **改归属不动文件**：方框间拖放、「移到其他方框」「从方框移除」都只在一个 `BEGIN IMMEDIATE` 事务里改 `fence_item`，不调 `MoveFileExW`。只有「移入收纳库」走现有的带日志移动 `JournaledMove`。
+3. **布局落库**：拖动过程中只改窗口，松手时写一次库，坐标用工作区相对 DIP。宽和高都不能小于 120 DIP，超出可见区域就夹回来。
+4. **只读门禁**：命令执行前先检查只读状态，改归属、移文件的命令返回 `ReadOnly`，改布局的照常执行。界面根据同一个状态把对应菜单项置灰，并提示原因。
+5. **暂存方框与公共桌面**：`is_staging=1` 的方框不能删，公共桌面的项不能移入收纳库。这两条规则在 Domain 层判断，界面只负责显示结果。
+6. **再次启动**：沿用现有的单实例互斥锁和激活信号。已运行的实例收到信号后，在界面线程把窗口恢复、激活并置前，新进程不开库直接退出。
+7. **测试**：每个命令都要有单元测试，覆盖正常路径、只读被拒、暂存方框删除被拒、公共桌面项移入收纳库被拒。改归属那条要断言 `MoveFileExW` 一次都没被调用。界面交互放进真机检查清单。
+
+#### 4.7.1 实现落点（v1.0.11，研发补充，不改上面的约束）
+- 菜单项（架构师已定）：方框——重命名、折叠/展开、删除（暂存除外）、透明度（40% / 70% / 100%）；文件——打开、打开文件位置、移到其他方框、移入收纳库（公共桌面除外）、从方框移除。内容与可用状态由 `Application/Fences/FenceMenus` 统一给出，禁用项带原因提示。
+- 命令：`Application/Fences/FenceCommands.cs`（9 条命令）+ `FenceCommandHandler`；读取经 `FenceBoard`。「移入收纳库」经 `JournaledVaultMover` → `JournaledMove` → `GatedFileMover`。
+- 拖动会话：`FenceDragSession`（拖动中只回调移窗口，松手 `Complete` 产生唯一一条命令，Esc `Cancel` 放回原位且不产生命令）；`ItemDragSession`（可放下高亮、拖到原方框 / 方框外 / Esc → 不产生命令）。
+- 第二实例：`Application/Startup/InstanceActivation` 把 `Activated` 封送到 `IUiDispatcher`（WPF 为 `Dispatcher.BeginInvoke`），再调 `IWindowActivator`。
+- 只读模式下「删除方框」也禁用（删方框会删掉其 `fence_item` 映射，属于改归属）；重命名 / 透明度 / 折叠与改布局一样照常执行。
+- 迁移 v3：`fence.collapsed INTEGER NOT NULL DEFAULT 0 CHECK (collapsed IN (0,1))`；新表 `fence_item(id PK, fence_id → fence ON DELETE CASCADE, file_path COLLATE NOCASE, file_id, is_public_desktop, sort_order)`，`ux_fence_item_file_path` 唯一、`ix_fence_item_fence_id_sort`。删方框只删映射，磁盘文件不动。
+- 交互状态截图：`DeskBox.Desktop.Tests/FenceUiScreenshotTests`（`Category=WindowsIntegration`）用 `RenderTargetBitmap` 渲染悬停、可放下高亮、禁用原因、Esc 还原四张 PNG，`windows-integration.yml` 上传为 artifact `fence-ui-screenshots`。
+- `FWF_NOICONS` 不在本波。
 
 ### 4.4 SQLite 持久化（v1.0.6，DeskBox.Infrastructure.Core）
 `DeskBox.Infrastructure.Core` 目标框架为 `net8.0`，不依赖 WPF，所以集成测试能在任何宿主上对真实 SQLite 文件运行。Windows 专用的部分用 `[SupportedOSPlatform("windows")]` 标注。

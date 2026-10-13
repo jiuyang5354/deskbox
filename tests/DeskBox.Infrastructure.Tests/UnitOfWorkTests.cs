@@ -167,8 +167,32 @@ public sealed class SchemaV2Tests : IAsyncLifetime
             await s.ExecuteAsync("PRAGMA user_version=1;", default);
         });
         (await SqliteSchema.MigrateAsync(db)).Should().Be(1);
-        SqliteSchema.LatestVersion.Should().Be(2);
+        SqliteSchema.LatestVersion.Should().Be(3);
         (await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).RunAsync("SELECT COUNT(*) FROM sqlite_master WHERE name='fence';", c => c.ExecuteScalarAsync())))
             .Should().Be(1L);
+    }
+
+    [Fact]
+    public async Task V2_database_with_fences_upgrades_to_v3_keeps_rows_and_adds_collapsed_and_fence_item()
+    {
+        var db = new SqliteUnitOfWorkFactory(Path.Combine(_t.Dir, "v2.db"));
+        await db.InTransactionAsync(async u =>
+        {
+            var s = SqliteUnitOfWork.From(u);
+            await s.ExecuteAsync(SqliteSchema.Migrations[0], default);
+            await s.ExecuteAsync(SqliteSchema.Migrations[1], default);
+            await s.ExecuteAsync("PRAGMA user_version=2;", default);
+            await s.ExecuteAsync("INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging,sort_order) " +
+                "VALUES ('6f1c3c1e-0000-0000-0000-000000000001','旧','m',1,2,200,200,96,80,1,0);", default);
+        });
+        (await SqliteSchema.MigrateAsync(db)).Should().Be(2);
+        var fence = (await db.InTransactionAsync(u => new SqliteFenceStore().ListAsync(u))).Single();
+        (fence.Title, fence.IsStaging, fence.IsCollapsed).Should().Be(("旧", true, false), "旧行 collapsed 默认 0");
+        (await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).RunAsync(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('fence_item','ux_fence_item_file_path','ix_fence_item_fence_id_sort');",
+            c => c.ExecuteScalarAsync()))).Should().Be(3L);
+        (await SqliteSchema.MigrateAsync(db)).Should().Be(3, "重复调用不再迁移");
+        await FluentActions.Awaiting(() => db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
+            "UPDATE fence SET collapsed = 2;", default))).Should().ThrowAsync<SqliteException>("collapsed 只能是 0/1");
     }
 }

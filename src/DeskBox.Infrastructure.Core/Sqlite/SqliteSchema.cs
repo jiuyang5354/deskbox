@@ -87,6 +87,22 @@ public static class SqliteSchema
             sort_order INTEGER NOT NULL DEFAULT 0
         );
         """,
+        // v3（TDD §4.7，任务 5）：折叠状态持久化；方框中的文件映射。改归属只改 fence_item，不动磁盘文件
+        """
+        ALTER TABLE fence ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0 CHECK (collapsed IN (0, 1)); -- 1 = 折叠
+
+        CREATE TABLE fence_item (
+            id                TEXT    NOT NULL PRIMARY KEY,                               -- 映射 ID（GUID）
+            fence_id          TEXT    NOT NULL REFERENCES fence (id) ON DELETE CASCADE,   -- 所属方框；删方框只删映射
+            file_path         TEXT    NOT NULL COLLATE NOCASE,                            -- 桌面上的真实路径
+            file_id           TEXT    NOT NULL,                                           -- 卷序列号:128 位文件 ID（大写）
+            is_public_desktop INTEGER NOT NULL DEFAULT 0 CHECK (is_public_desktop IN (0, 1)), -- 公共桌面项不能移入收纳库
+            sort_order        INTEGER NOT NULL DEFAULT 0 CHECK (sort_order >= 0)
+        );
+        -- 一个文件只属于一个方框（TDD §7 第 1 条，不区分大小写）
+        CREATE UNIQUE INDEX ux_fence_item_file_path ON fence_item (file_path);
+        CREATE INDEX ix_fence_item_fence_id_sort ON fence_item (fence_id, sort_order);
+        """,
     ];
 
     public static int LatestVersion => Migrations.Length;

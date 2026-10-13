@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using DeskBox.Application.Desktop;
+using DeskBox.Application.Fences;
 using DeskBox.Application.Files;
 using DeskBox.Application.Ports;
 using DeskBox.Application.Startup;
@@ -30,8 +31,8 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
         try
         {
-            var ui = SynchronizationContext.Current;
-            var instance = Own(new NamedMutexSingleInstance(ui));
+            var uiContext = SynchronizationContext.Current;
+            var instance = Own(new NamedMutexSingleInstance(uiContext));
             // DB/logs 仍在 LocalAppData；收纳库按 PRD 用 %USERPROFILE%\DeskBox\Vault（与桌面更易同盘）。
             // 未正式发布，不做 LocalAppData\DeskBox\Vault → UserProfile 的迁数据；旧路径有文件则忽略。
             var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskBox");
@@ -43,13 +44,22 @@ public partial class App : System.Windows.Application
             var log = new TraceRecoveryLog();
             var recovery = new JournalRecovery(db, journal, new WindowsFileIdentity(), new VaultDirectoryIndex(vaultDir),
                 new SqliteVaultRecordStore(), new SqliteLostFileNoticeStore(), log, TimeProvider.System);
-            var shell = Own(new Win32ShellNotifications(ui));
+            var shell = Own(new Win32ShellNotifications(uiContext));
             var windowing = new Win32DesktopWindowing();
-            var embedder = Own(new DesktopEmbedder(db, new SqliteFenceStore(), windowing, Own(new Win32MonitorService(shell)),
-                new WpfBoxWindows(windowing), shell));
+            var monitors = Own(new Win32MonitorService(shell));
+            var fenceStore = new SqliteFenceStore();
+            var itemStore = new SqliteFenceItemStore();
+            FileMover = new GatedFileMover(FileMoverFactory.Create(), Mode);
+            // 「移入收纳库」是方框界面唯一会移动文件的命令：走带日志的 JournaledMove，只读时由 GatedFileMover 拒绝（TDD §4.7 第 2、4 条）
+            var journaled = new JournaledMove(db, FileMover, journal, new WindowsFileIdentity(), FileMoverFactory.CreateProbe(), log, TimeProvider.System);
+            var commands = new FenceCommandHandler(db, fenceStore, itemStore, monitors, new JournaledVaultMover(journaled, vaultDir), Mode);
+            var ui = new FenceUi(windowing, monitors, commands, new FenceBoard(db, fenceStore, itemStore), Mode);
+            var embedder = Own(new DesktopEmbedder(db, fenceStore, windowing, monitors, ui, shell));
+            embedder.Attached += async (_, _) => await RefreshUiAsync(ui);
+            // 第二实例唤醒：激活信号在线程池到达，置前在界面线程执行（TDD §4.7 第 6 条）
+            instance.Activated += new InstanceActivation(new WpfUiDispatcher(Dispatcher), new WpfWindowActivator(() => ui.Windows)).OnSignal;
             var desktop = FileMoverFactory.CreateDesktopEnumerator();
             if (desktop is IDisposable d) Own(d);
-            FileMover = new GatedFileMover(FileMoverFactory.Create(), Mode);
 
             var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath), recovery, desktop, embedder,
                 new MessageBoxNotifier(), Mode);
@@ -61,6 +71,18 @@ public partial class App : System.Windows.Application
             Trace.TraceError("DeskBox 启动失败：{0}", ex);
             MessageBox.Show($"DeskBox 无法启动：{ex.Message}", "DeskBox", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(1);
+        }
+    }
+
+    private static async Task RefreshUiAsync(FenceUi ui)
+    {
+        try
+        {
+            await ui.RefreshAsync();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Trace.TraceError("DeskBox 刷新方框失败：{0}", ex);
         }
     }
 

@@ -255,7 +255,7 @@ public sealed class SqliteSnapshotStore : ISnapshotStore
 /// <summary>方框存储：位置的唯一来源（嵌入 / Explorer 重启后都从这里读）。</summary>
 public sealed class SqliteFenceStore : IFenceStore
 {
-    private const string Columns = "id, title, monitor_id, x, y, width, height, dpi, opacity, is_staging, sort_order";
+    private const string Columns = "id, title, monitor_id, x, y, width, height, dpi, opacity, is_staging, sort_order, collapsed";
 
     public Task<IReadOnlyList<Fence>> ListAsync(IUnitOfWork uow, CancellationToken ct = default) =>
         SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence ORDER BY sort_order, id;", c => Sql.ListAsync(c, Map, ct));
@@ -272,16 +272,53 @@ public sealed class SqliteFenceStore : IFenceStore
         ArgumentNullException.ThrowIfNull(fence);
         return SqliteUnitOfWork.From(uow).ExecuteAsync(
             $"""
-            INSERT INTO fence ({Columns}) VALUES ($id, $t, $m, $x, $y, $w, $h, $dpi, $o, $s, $so)
+            INSERT INTO fence ({Columns}) VALUES ($id, $t, $m, $x, $y, $w, $h, $dpi, $o, $s, $so, $c)
             ON CONFLICT (id) DO UPDATE SET title = excluded.title, monitor_id = excluded.monitor_id, x = excluded.x, y = excluded.y,
-                width = excluded.width, height = excluded.height, dpi = excluded.dpi, opacity = excluded.opacity, sort_order = excluded.sort_order;
+                width = excluded.width, height = excluded.height, dpi = excluded.dpi, opacity = excluded.opacity, sort_order = excluded.sort_order,
+                collapsed = excluded.collapsed;
             """, ct,
             ("$id", Sql.Id(fence.Id)), ("$t", fence.Title), ("$m", fence.MonitorId), ("$x", fence.X), ("$y", fence.Y),
             ("$w", fence.Width), ("$h", fence.Height), ("$dpi", fence.Dpi), ("$o", fence.Opacity), ("$s", fence.IsStaging ? 1 : 0),
-            ("$so", fence.SortOrder));
+            ("$so", fence.SortOrder), ("$c", fence.IsCollapsed ? 1 : 0));
     }
+
+    public Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default) =>
+        SqliteUnitOfWork.From(uow).ExecuteAsync("DELETE FROM fence WHERE id = $id;", ct, ("$id", Sql.Id(id)));
 
     private static Fence Map(SqliteDataReader r) =>
         new(Sql.ParseId(r.GetString(0)), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt32(4), r.GetInt32(5), r.GetInt32(6),
-            r.GetInt32(7), r.GetInt32(8), r.GetInt64(9) == 1) { SortOrder = r.GetInt32(10) };
+            r.GetInt32(7), r.GetInt32(8), r.GetInt64(9) == 1, r.GetInt64(11) == 1) { SortOrder = r.GetInt32(10) };
+}
+
+/// <summary>方框中的文件映射（fence_item，迁移 v3）。file_path 不区分大小写全局唯一，冲突按错误抛出。</summary>
+public sealed class SqliteFenceItemStore : IFenceItemStore
+{
+    private const string Columns = "id, fence_id, file_path, file_id, is_public_desktop, sort_order";
+
+    public async Task<FenceItem?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default) =>
+        (await SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence_item WHERE id = $id;",
+            c => Sql.ListAsync(c, Map, ct), ("$id", Sql.Id(id)))).SingleOrDefault();
+
+    public Task<IReadOnlyList<FenceItem>> ListByFenceAsync(IUnitOfWork uow, Guid fenceId, CancellationToken ct = default) =>
+        SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence_item WHERE fence_id = $f ORDER BY sort_order, id;",
+            c => Sql.ListAsync(c, Map, ct), ("$f", Sql.Id(fenceId)));
+
+    public Task UpsertAsync(IUnitOfWork uow, FenceItem item, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        return SqliteUnitOfWork.From(uow).ExecuteAsync(
+            $"""
+            INSERT INTO fence_item ({Columns}) VALUES ($id, $f, $p, $fid, $pub, $so)
+            ON CONFLICT (id) DO UPDATE SET fence_id = excluded.fence_id, file_path = excluded.file_path,
+                file_id = excluded.file_id, sort_order = excluded.sort_order;
+            """, ct,
+            ("$id", Sql.Id(item.Id)), ("$f", Sql.Id(item.FenceId)), ("$p", item.FilePath), ("$fid", item.FileId),
+            ("$pub", item.IsPublicDesktop ? 1 : 0), ("$so", item.SortOrder));
+    }
+
+    public Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default) =>
+        SqliteUnitOfWork.From(uow).ExecuteAsync("DELETE FROM fence_item WHERE id = $id;", ct, ("$id", Sql.Id(id)));
+
+    private static FenceItem Map(SqliteDataReader r) =>
+        new(Sql.ParseId(r.GetString(0)), Sql.ParseId(r.GetString(1)), r.GetString(2), r.GetString(3), r.GetInt64(4) == 1, r.GetInt32(5));
 }

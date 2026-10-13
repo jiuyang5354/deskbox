@@ -503,3 +503,76 @@ public sealed class FenceStoreTests : IAsyncLifetime
             .Should().ThrowAsync<SqliteException>();
     }
 }
+
+public sealed class FenceItemStoreTests : IAsyncLifetime
+{
+    private const string IdA = "1A2B3C4D:000000000000000000000000000000AA";
+    private const string IdB = "1A2B3C4D:000000000000000000000000000000BB";
+    private readonly TempDb _t = new();
+    private readonly SqliteFenceStore _fences = new();
+    private readonly SqliteFenceItemStore _items = new();
+    private readonly Fence _a = new(Guid.NewGuid(), "A", "m", 0, 0, 200, 200);
+    private readonly Fence _b = new(Guid.NewGuid(), "B", "m", 300, 0, 200, 200);
+
+    public async Task InitializeAsync()
+    {
+        await _t.InitializeAsync();
+        await _t.Tx(async u => { await _fences.UpsertAsync(u, _a); await _fences.UpsertAsync(u, _b); });
+    }
+
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    [Fact]
+    public async Task Item_roundtrips_lists_by_fence_in_order_and_reassigns()
+    {
+        var i1 = new FenceItem(Guid.NewGuid(), _a.Id, @"C:\Users\u\Desktop\a.txt", IdA.ToLowerInvariant(), sortOrder: 1);
+        var i2 = new FenceItem(Guid.NewGuid(), _a.Id, @"C:\Users\Public\Desktop\b.lnk", IdB, isPublicDesktop: true, sortOrder: 0);
+        await _t.Tx(async u => { await _items.UpsertAsync(u, i1); await _items.UpsertAsync(u, i2); });
+
+        var got = (await _t.Tx(u => _items.GetAsync(u, i2.Id)))!;
+        (got.FenceId, got.FilePath, got.FileId, got.IsPublicDesktop, got.SortOrder)
+            .Should().Be((_a.Id, @"C:\Users\Public\Desktop\b.lnk", IdB, true, 0));
+        (await _t.Tx(u => _items.ListByFenceAsync(u, _a.Id))).Select(i => i.Id).Should().Equal(i2.Id, i1.Id);
+
+        i1.MoveToFence(_b.Id, 0);
+        await _t.Tx(u => _items.UpsertAsync(u, i1));
+        (await _t.Tx(u => _items.ListByFenceAsync(u, _b.Id))).Single().Id.Should().Be(i1.Id);
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM fence_item;")).Should().Be(2, "改归属是更新，不是新增");
+
+        await _t.Tx(u => _items.DeleteAsync(u, i1.Id));
+        (await _t.Tx(u => _items.GetAsync(u, i1.Id))).Should().BeNull();
+        await FluentActions.Awaiting(() => _t.Tx(u => _items.UpsertAsync(u, null!))).Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    [Fact]
+    public async Task File_path_is_globally_unique_case_insensitive()
+    {
+        await _t.Tx(u => _items.UpsertAsync(u, new FenceItem(Guid.NewGuid(), _a.Id, @"C:\Desk\a.txt", IdA)));
+        await FluentActions.Awaiting(() => _t.Tx(u => _items.UpsertAsync(u, new FenceItem(Guid.NewGuid(), _b.Id, @"c:\DESK\A.TXT", IdB))))
+            .Should().ThrowAsync<SqliteException>();
+    }
+
+    [Fact]
+    public async Task Item_requires_existing_fence_and_deleting_fence_cascades_mappings_only()
+    {
+        await FluentActions.Awaiting(() => _t.Tx(u => _items.UpsertAsync(u, new FenceItem(Guid.NewGuid(), Guid.NewGuid(), @"C:\x", IdA))))
+            .Should().ThrowAsync<SqliteException>("外键");
+        var i = new FenceItem(Guid.NewGuid(), _a.Id, @"C:\Desk\a.txt", IdA);
+        await _t.Tx(u => _items.UpsertAsync(u, i));
+        await _t.Tx(u => _fences.DeleteAsync(u, _a.Id));
+        (await _t.Tx(u => _fences.GetAsync(u, _a.Id))).Should().BeNull();
+        (await _t.Tx(u => _items.GetAsync(u, i.Id))).Should().BeNull();
+        (await _t.Tx(u => _fences.GetAsync(u, _b.Id))).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Collapsed_state_roundtrips()
+    {
+        _b.Collapse();
+        await _t.Tx(u => _fences.UpsertAsync(u, _b));
+        (await _t.Tx(u => _fences.GetAsync(u, _b.Id)))!.IsCollapsed.Should().BeTrue();
+        _b.Expand();
+        await _t.Tx(u => _fences.UpsertAsync(u, _b));
+        (await _t.Tx(u => _fences.GetAsync(u, _b.Id)))!.IsCollapsed.Should().BeFalse();
+    }
+}

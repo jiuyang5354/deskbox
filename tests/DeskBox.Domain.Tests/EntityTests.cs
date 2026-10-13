@@ -309,3 +309,48 @@ public class LostFileNoticeTests
         FluentActions.Invoking(() => new LostFileNotice(Guid.NewGuid(), Fid, " ", default)).Should().Throw<DomainValidationException>();
     }
 }
+
+public class FenceUiDomainTests
+{
+    [Fact]
+    public void Collapsed_flag_restores_state_and_toggle_flips_it()
+    {
+        var f = new Fence(Guid.NewGuid(), "A", "m", 0, 0, 120, 120, isCollapsed: true);
+        f.IsCollapsed.Should().BeTrue();
+        f.ToggleCollapse();
+        f.IsCollapsed.Should().BeFalse();
+        f.ToggleCollapse();
+        f.State.Should().Be(DeskBox.Domain.StateMachines.FenceState.Collapsed);
+    }
+
+    [Fact]
+    public void Staging_and_deleted_fences_cannot_be_deleted()
+    {
+        new Fence(Guid.NewGuid(), "暂存", "m", 0, 0, 120, 120, isStaging: true).CanDelete.Should().BeFalse();
+        var f = new Fence(Guid.NewGuid(), "A", "m", 0, 0, 120, 120);
+        f.CanDelete.Should().BeTrue();
+        f.Delete();
+        f.CanDelete.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Public_desktop_item_cannot_move_to_vault()
+    {
+        const string id = "1A2B3C4D:000000000000000000000000000000AA";
+        FluentActions.Invoking(() => new FenceItem(Guid.NewGuid(), Guid.NewGuid(), @"C:\p", id, isPublicDesktop: true).EnsureCanMoveToVault())
+            .Should().Throw<DomainValidationException>().Which.Field.Should().Be("IsPublicDesktop");
+        FluentActions.Invoking(() => new FenceItem(Guid.NewGuid(), Guid.NewGuid(), @"C:\p", id).EnsureCanMoveToVault()).Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData(-10, -10, 200, 200, 0, 0, 200, 200)]
+    [InlineData(1900, 1000, 200, 200, 1720, 840, 200, 200)]
+    [InlineData(10, 10, 50, 60, 10, 10, 120, 120)]
+    [InlineData(0, 0, 5000, 5000, 0, 0, 1920, 1040)]
+    public void ClampStored_keeps_min_size_and_inside_work_area(int x, int y, int w, int h, int ex, int ey, int ew, int eh) =>
+        DeskBox.Domain.Geometry.DesktopGeometry.ClampStored(new(x, y, w, h), 1920, 1040, 120).Should().Be(new DeskBox.Domain.Geometry.ScreenRect(ex, ey, ew, eh));
+
+    [Fact]
+    public void ClampStored_on_tiny_work_area_still_keeps_min_size() =>
+        DeskBox.Domain.Geometry.DesktopGeometry.ClampStored(new(50, 50, 300, 300), 100, 100, 120).Should().Be(new DeskBox.Domain.Geometry.ScreenRect(0, 0, 120, 120));
+}
