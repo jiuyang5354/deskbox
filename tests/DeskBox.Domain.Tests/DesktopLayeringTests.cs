@@ -142,6 +142,65 @@ public class DesktopLayeringTests
             "DeskBox：桌面嵌入不可用，已切换为兼容显示", "DeskBox：桌面嵌入不可用，已切换为兼容显示", "DeskBox");
     }
 
+    private Fence AddFence(string title, int x)
+    {
+        var f = new Fence(Guid.NewGuid(), title, Primary.Fingerprint, x, 24, 200, 200);
+        _fences.Rows[f.Id] = f;
+        return f;
+    }
+
+    [Theory]
+    [InlineData(FakeLayering.Legacy)]
+    [InlineData(FakeLayering.ProgmanChild)]
+    public async Task Set_bounds_throwing_for_one_fence_falls_back_that_fence_only_and_start_does_not_throw(FakeLayering layering)
+    {
+        _desk.Layering = layering;
+        _desk.StartExplorer(broadcast: false);
+        var bad = AddFence("坏", 400);
+        var after = AddFence("后", 700);
+        _desk.SetBoundsFailsFor.Add(_desk.Ensure(bad));
+        using var sut = Sut();
+
+        await FluentActions.Awaiting(() => sut.StartAsync()).Should().NotThrowAsync();
+
+        var badBox = sut.Windows[bad.Id];
+        _desk.GetParent(badBox).Should().Be(IntPtr.Zero, "撤回挂接，不留在未校验的父窗口下");
+        _desk.BottomMost.Should().Contain(badBox);
+        foreach (var ok in new[] { _staging.Id, after.Id })
+        {
+            _desk.GetParent(sut.Windows[ok]).Should().Be(_desk.Worker, "其余方框照常嵌入（包括排在出错方框之后的）");
+            _desk.BottomMost.Should().NotContain(sut.Windows[ok]);
+        }
+        sut.Mode.Should().Be(EmbedMode.Degraded, "有方框在兼容显示");
+        _log.Reports.Should().HaveCount(3);
+        var r = _log.Reports.Single(x => x.FenceId == bad.Id);
+        r.Path.Should().Be(EmbedPath.Fallback);
+        r.Validation.Should().Contain("InvalidOperationException").And.Contain("SetWindowPos 失败（Win32 5）");
+    }
+
+    [Fact]
+    public async Task Set_bounds_throwing_during_taskbar_created_reembed_is_handled_the_same_way()
+    {
+        _desk.StartExplorer(broadcast: false);
+        var bad = AddFence("坏", 400);
+        using var sut = Sut();
+        var failures = new List<Exception>();
+        sut.AttachFailed += (_, e) => failures.Add(e);
+        await sut.StartAsync();
+        sut.Mode.Should().Be(EmbedMode.Embedded);
+
+        _desk.SetBoundsFailsFor.Add(sut.Windows[bad.Id]);
+        _desk.FailWhileEmbeddedOnly = false; // 兼容显示的放置也抛：仍不外抛，记进日志
+        _desk.Broadcast();
+
+        failures.Should().BeEmpty("逐个方框处理，异常不会冒到 AttachFailed");
+        _desk.GetParent(sut.Windows[bad.Id]).Should().Be(IntPtr.Zero);
+        _desk.BottomMost.Should().Contain(sut.Windows[bad.Id]);
+        _desk.GetParent(sut.Windows[_staging.Id]).Should().Be(_desk.Worker);
+        sut.Mode.Should().Be(EmbedMode.Degraded);
+        _log.Reports.Last(x => x.FenceId == bad.Id).Validation.Should().Contain("挂接异常").And.Contain("兼容显示放置异常 InvalidOperationException");
+    }
+
     /// <summary>「降级模式下方框浮到最前面」：修复前（WM_WINDOWPOSCHANGING 不处理）这条是红的。</summary>
     [Fact]
     public async Task Degraded_box_stays_below_other_windows_after_user_clicks_it()

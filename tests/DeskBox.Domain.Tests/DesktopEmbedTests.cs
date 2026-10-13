@@ -7,7 +7,7 @@ using NSubstitute;
 namespace DeskBox.Domain.Tests;
 
 /// <summary>Explorer 运行时的窗口层级。</summary>
-internal enum FakeLayering
+public enum FakeLayering
 {
     /// <summary>旧层级：0x052C 后出现两个顶层 WorkerW，前一个持有 SHELLDLL_DefView，后一个是壁纸层。</summary>
     Legacy,
@@ -185,9 +185,15 @@ internal sealed class FakeDesktop : IDesktopWindowTree, IDesktopWindowing, IShel
 
     public void Unpin(IntPtr hwnd) => _pinned.Remove(hwnd);
 
+    /// <summary>对这些窗口 SetBounds 抛异常；FailWhileEmbeddedOnly 为 true 时只在挂到父窗口后才抛（模拟 SetWindowPos 对子窗口失败）。</summary>
+    public HashSet<IntPtr> SetBoundsFailsFor { get; } = [];
+    public bool FailWhileEmbeddedOnly { get; set; } = true;
+
     public void SetBounds(IntPtr hwnd, ScreenRect screen)
     {
         if (!_nodes.ContainsKey(hwnd)) throw new InvalidOperationException("dead window");
+        if (SetBoundsFailsFor.Contains(hwnd) && (!FailWhileEmbeddedOnly || _nodes[hwnd].Parent != IntPtr.Zero))
+            throw new InvalidOperationException("SetWindowPos 失败（Win32 5）");
         Bounds[hwnd] = screen;
     }
 

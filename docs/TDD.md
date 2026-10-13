@@ -164,6 +164,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   2. 方框与至少一块显示器的工作区有交集；
   3. `Root(box)` 是 Progman，或类名为 `WorkerW` 且可见。
   规则：**方框必须能看见，嵌不进桌面也要显示**。
+- **逐个方框隔离**：每个方框的「挂接 + 放置（`SetBounds`）+ 校验」是一个整体，其中任何一步抛异常（`OutOfMemoryException`、取消除外）都按校验失败处理：撤回挂接、退回兼容显示、日志 `validation` 字段写明异常类型和消息，然后继续下一个方框；兼容显示自身的放置再抛也只记日志不外抛。首次 `StartAsync` 与 `TaskbarCreated` 重新嵌入走同一路径，一个方框出错不会让其他方框被跳过、`Mode` 不更新或异常冒出 `StartAsync`。
 - 每个方框每次挂接写一条日志 `Embed fence=… os=[build <CurrentBuild.UBR>, DisplayVersion <25H2>] layering=… parent=[类名链] validation=[…] path=Embedded|Fallback`（兼容显示为 WARN）。
 - 同一时间只有一轮挂接（`SemaphoreSlim`）。
 
