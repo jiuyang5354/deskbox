@@ -1,6 +1,6 @@
 # 《DeskBox 桌面收纳》PRD v1.2.4
 
-> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost → v1.2.3 新增跳过原因 AlreadyInProgress（同一文件已有进行中的整理） → v1.2.4 方框位置改为相对工作区的 DIP；显示器消失时方框临时挪到主屏、不落库，显示器回来后按原记录恢复；补充低于 100% 缩放的已知限制。
+> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost → v1.2.3 新增跳过原因 AlreadyInProgress（同一文件已有进行中的整理） → v1.2.4 方框位置改为相对工作区的 DIP；显示器消失时方框临时挪到主屏、不落库，显示器回来后按原记录恢复；Orphaned 状态已废弃，被临时挪到主屏取代；补充低于 100% 缩放的已知限制。
 
 ## 1. 背景与目标
 Windows 用户的桌面常堆满快捷方式、截图和临时文件。DeskBox 要做到：
@@ -37,17 +37,12 @@ stateDiagram-v2
   Expanded --> Hidden: Hide
   Collapsed --> Hidden: Hide
   Hidden --> Expanded: Show
-  Expanded --> Orphaned: MonitorLost
-  Collapsed --> Orphaned: MonitorLost
-  Hidden --> Orphaned: MonitorLost
-  Orphaned --> Expanded: MonitorRestored
   Expanded --> Deleted: Delete
   Collapsed --> Deleted: Delete
   Hidden --> Deleted: Delete
-  Orphaned --> Deleted: Delete
   Deleted --> [*]
 ```
-非法流转一律拒绝（抛 `InvalidTransitionException`）。暂存方框（`is_staging=1`）不可删除。Orphaned 方框整体临时显示在主屏工作区内（不写回数据库），显示器回来后按原记录恢复（v1.2.4）。
+非法流转一律拒绝（抛 `InvalidTransitionException`）。暂存方框（`is_staging=1`）不可删除。方框所在显示器拔出时**不改变方框状态**：方框整体临时显示在主屏工作区内（不写回数据库），显示器回来后按原记录恢复。原 Orphaned 状态已废弃，被临时挪到主屏取代（v1.2.4）。
 
 ### 3.2 一键整理任务（OrganizeJob）
 ```mermaid
