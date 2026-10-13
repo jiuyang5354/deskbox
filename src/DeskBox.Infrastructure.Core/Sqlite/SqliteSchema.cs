@@ -103,6 +103,14 @@ public static class SqliteSchema
         CREATE UNIQUE INDEX ux_fence_item_file_path ON fence_item (file_path);
         CREATE INDEX ix_fence_item_fence_id_sort ON fence_item (fence_id, sort_order);
         """,
+        // v4（TDD §4.6 第 2.5 步）：最多一个暂存方框。旧库若已有多个：保留 sort_order 最小（同序取 id 最小）的那个，
+        // 其余降为普通方框（is_staging=0），方框与其中文件映射都保留，不删任何数据
+        """
+        UPDATE fence SET is_staging = 0
+        WHERE is_staging = 1
+          AND id <> (SELECT id FROM fence WHERE is_staging = 1 ORDER BY sort_order, id LIMIT 1);
+        CREATE UNIQUE INDEX ux_fence_single_staging ON fence (is_staging) WHERE is_staging = 1;
+        """,
     ];
 
     public static int LatestVersion => Migrations.Length;

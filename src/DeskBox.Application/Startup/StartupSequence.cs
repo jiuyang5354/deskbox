@@ -17,11 +17,12 @@ public sealed record StartupResult(StartupOutcome Outcome, IReadOnlyList<Recover
     IReadOnlyList<DesktopItem> DesktopItems, string? ReadOnlyReason = null);
 
 /// <summary>
-/// 启动顺序（TDD §4.6，架构师定）：单实例锁 → 打开数据库并迁移 → Journal 恢复 → 枚举桌面 → 嵌入方框。
+/// 启动顺序（TDD §4.6，架构师定）：单实例锁 → 打开数据库并迁移 → 暂存方框自检 → Journal 恢复 → 枚举桌面 → 嵌入方框。
+/// 自检补建失败与恢复失败一样进入只读模式（自检失败时仍执行恢复，恢复本身不移动文件；提示用第一个失败原因）。
 /// 恢复严格先于枚举和嵌入；恢复抛异常或仍有条目处理失败（保持 Pending）时进入只读模式、提示用户、跳过枚举。
 /// 锁、数据库、嵌入失败直接抛出，由启动入口决定退出。
 /// </summary>
-public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrapper database, IStartupRecovery recovery,
+public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrapper database, IStagingSelfCheck staging, IStartupRecovery recovery,
     IDesktopEnumerator desktop, IStartupEmbedder embedder, IStartupNotifier notifier, OperatingMode mode)
 {
     public async Task<StartupResult> RunAsync(CancellationToken ct = default)
@@ -34,17 +35,26 @@ public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrap
 
         await database.MigrateAsync(ct);
 
+        string? failure = null;
+        try
+        {
+            await staging.EnsureAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            failure = $"暂存方框补建失败（{ex.GetType().Name}）";
+        }
+
         IReadOnlyList<RecoveredEntry> recovered = [];
-        string? failure;
         try
         {
             recovered = await recovery.RecoverAsync(ct);
             var failed = recovered.Count(r => r.Outcome == RecoveryOutcome.Failed);
-            failure = failed == 0 ? null : $"{failed} 条未完成的整理记录恢复失败";
+            if (failed > 0) failure ??= $"{failed} 条未完成的整理记录恢复失败";
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            failure = $"整理记录恢复失败（{ex.GetType().Name}）";
+            failure ??= $"整理记录恢复失败（{ex.GetType().Name}）";
         }
 
         var items = new List<DesktopItem>();

@@ -167,7 +167,7 @@ public sealed class SchemaV2Tests : IAsyncLifetime
             await s.ExecuteAsync("PRAGMA user_version=1;", default);
         });
         (await SqliteSchema.MigrateAsync(db)).Should().Be(1);
-        SqliteSchema.LatestVersion.Should().Be(3);
+        SqliteSchema.LatestVersion.Should().Be(4);
         (await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).RunAsync("SELECT COUNT(*) FROM sqlite_master WHERE name='fence';", c => c.ExecuteScalarAsync())))
             .Should().Be(1L);
     }
@@ -191,8 +191,65 @@ public sealed class SchemaV2Tests : IAsyncLifetime
         (await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).RunAsync(
             "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('fence_item','ux_fence_item_file_path','ix_fence_item_fence_id_sort');",
             c => c.ExecuteScalarAsync()))).Should().Be(3L);
-        (await SqliteSchema.MigrateAsync(db)).Should().Be(3, "重复调用不再迁移");
+        (await SqliteSchema.MigrateAsync(db)).Should().Be(SqliteSchema.LatestVersion, "重复调用不再迁移");
         await FluentActions.Awaiting(() => db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
             "UPDATE fence SET collapsed = 2;", default))).Should().ThrowAsync<SqliteException>("collapsed 只能是 0/1");
+    }
+
+    private static async Task<SqliteUnitOfWorkFactory> V3Async(string dir, params (string Id, int Sort, int Staging)[] rows)
+    {
+        var db = new SqliteUnitOfWorkFactory(Path.Combine(dir, $"v3-{Guid.NewGuid():N}.db"));
+        await db.InTransactionAsync(async u =>
+        {
+            var s = SqliteUnitOfWork.From(u);
+            for (var i = 0; i < 3; i++) await s.ExecuteAsync(SqliteSchema.Migrations[i], default);
+            await s.ExecuteAsync("PRAGMA user_version=3;", default);
+            foreach (var (id, sort, staging) in rows)
+                await s.ExecuteAsync("INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging,sort_order) " +
+                    $"VALUES ('{id}','t','m',0,0,200,200,96,80,{staging},{sort});", default);
+        });
+        return db;
+    }
+
+    private static Task<long> Count(SqliteUnitOfWorkFactory db, string sql) =>
+        db.InTransactionAsync(async u => (long)(await SqliteUnitOfWork.From(u).RunAsync(sql, c => c.ExecuteScalarAsync()))!);
+
+    [Fact]
+    public async Task V4_adds_partial_unique_index_allowing_one_staging_and_many_normal()
+    {
+        var db = await V3Async(_t.Dir, ("00000000-0000-0000-0000-000000000001", 0, 1), ("00000000-0000-0000-0000-000000000002", 1, 0));
+        (await SqliteSchema.MigrateAsync(db)).Should().Be(3);
+        (await Count(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ux_fence_single_staging';")).Should().Be(1);
+        await FluentActions.Awaiting(() => db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
+            "INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging) VALUES ('x','t','m',0,0,200,200,96,80,1);", default)))
+            .Should().ThrowAsync<SqliteException>("最多一个暂存方框");
+        await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
+            "INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging) VALUES ('y','t','m',0,0,200,200,96,80,0);", default));
+        (await Count(db, "SELECT COUNT(*) FROM fence WHERE is_staging = 0;")).Should().Be(2, "普通方框不受限制");
+    }
+
+    [Fact]
+    public async Task V4_demotes_duplicate_staging_fences_keeping_lowest_sort_order_and_all_rows()
+    {
+        var db = await V3Async(_t.Dir,
+            ("00000000-0000-0000-0000-00000000000b", 2, 1),
+            ("00000000-0000-0000-0000-00000000000a", 1, 1),
+            ("00000000-0000-0000-0000-00000000000c", 1, 1));
+        await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
+            "INSERT INTO fence_item (id,fence_id,file_path,file_id) VALUES ('i','00000000-0000-0000-0000-00000000000b','C:\\d\\x','1A2B3C4D:000000000000000000000000000000AA');", default));
+        await SqliteSchema.MigrateAsync(db);
+        (await Count(db, "SELECT COUNT(*) FROM fence;")).Should().Be(3, "不删方框");
+        (await Count(db, "SELECT COUNT(*) FROM fence_item;")).Should().Be(1, "不删映射");
+        (await db.InTransactionAsync(async u => (string)(await SqliteUnitOfWork.From(u).RunAsync(
+            "SELECT id FROM fence WHERE is_staging = 1;", c => c.ExecuteScalarAsync()))!))
+            .Should().Be("00000000-0000-0000-0000-00000000000a", "sort_order 最小，同序取 id 最小");
+    }
+
+    [Fact]
+    public async Task V4_on_database_without_staging_is_a_no_op_for_rows()
+    {
+        var db = await V3Async(_t.Dir, ("00000000-0000-0000-0000-000000000001", 0, 0));
+        await SqliteSchema.MigrateAsync(db);
+        (await Count(db, "SELECT COUNT(*) FROM fence WHERE is_staging = 1;")).Should().Be(0, "补建由启动自检负责，迁移不建");
     }
 }
