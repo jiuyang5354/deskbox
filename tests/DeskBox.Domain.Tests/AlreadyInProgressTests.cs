@@ -20,7 +20,7 @@ public class AlreadyInProgressTests
         journal.HasPendingAsync(Arg.Any<IUnitOfWork>(), Id.ToUpperInvariant(), Arg.Any<CancellationToken>()).Returns(true);
         var mover = Substitute.For<IFileMover>();
         var log = Substitute.For<IRecoveryLog>();
-        var sut = new JournaledMove(new FakeDb(), mover, journal, identity, log, TimeProvider.System);
+        var sut = new JournaledMove(new FakeDb(), mover, journal, identity, Substitute.For<IFileSystemProbe>(), log, TimeProvider.System);
 
         var r = await sut.ExecuteAsync(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt");
 
@@ -40,7 +40,7 @@ public class AlreadyInProgressTests
         identity.TryGetFileId(Arg.Any<string>()).Returns(Id);
         var journal = Substitute.For<IJournal>();
         journal.AppendPendingAsync(default!, default!, default).ReturnsForAnyArgs<Task>(_ => throw new IOException("disk"));
-        var sut = new JournaledMove(new FakeDb(), Substitute.For<IFileMover>(), journal, identity, Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        var sut = new JournaledMove(new FakeDb(), Substitute.For<IFileMover>(), journal, identity, Substitute.For<IFileSystemProbe>(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
         await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), "s", "t")).Should().ThrowAsync<IOException>();
     }
 
@@ -53,7 +53,7 @@ public class AlreadyInProgressTests
         identity.TryGetFileId(Arg.Any<string>()).Returns(Id);
         var mover = Substitute.For<IFileMover>();
         mover.MoveAsync(default!, default!, default, default).ReturnsForAnyArgs(new MoveResult.Skipped("s", SkipReason.Locked, 32));
-        var sut = new JournaledMove(db, mover, journal, identity, Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        var sut = new JournaledMove(db, mover, journal, identity, Substitute.For<IFileSystemProbe>(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
         await sut.ExecuteAsync(Guid.NewGuid(), "s", "t");
         db.Commits.Should().Be(2, "Begin（查 + 写）一个事务，RollBack 一个事务");
         (await sut.ExecuteAsync(Guid.NewGuid(), "s", "t")).Should().BeOfType<MoveResult.Skipped>()

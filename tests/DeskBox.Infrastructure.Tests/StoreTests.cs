@@ -364,6 +364,12 @@ public sealed class AlreadyInProgressIntegrationTests : IAsyncLifetime
     }
 
     private sealed class Fixed : IFileIdentity { public string? TryGetFileId(string fullPath) => IdA; }
+    private sealed class NoProbe : IFileSystemProbe
+    {
+        public bool IsDirectory(string path) => false;
+        public uint? GetAttributes(string path) => 0x20;
+    }
+
     private sealed class NoLog : IRecoveryLog
     {
         public int Count { get; private set; }
@@ -379,7 +385,7 @@ public sealed class AlreadyInProgressIntegrationTests : IAsyncLifetime
         await _t.Tx(u => journal.AppendPendingAsync(u, pending)); // 另一个整理任务正在移动它
         var mover = new CountingMover();
         var log = new NoLog();
-        var sut = new JournaledMove(_t.Db, mover, journal, new Fixed(), log, TimeProvider.System);
+        var sut = new JournaledMove(_t.Db, mover, journal, new Fixed(), new NoProbe(), log, TimeProvider.System);
 
         var r = await sut.ExecuteAsync(Guid.NewGuid(), @"C:\desk\a.txt", @"C:\vault\a.txt");
 
@@ -388,5 +394,80 @@ public sealed class AlreadyInProgressIntegrationTests : IAsyncLifetime
         log.Count.Should().Be(0);
         (await _t.Tx(u => journal.GetPendingAsync(u))).Should().ContainSingle().Which.Id.Should().Be(pending.Id);
         (await _t.Scalar<long>("SELECT COUNT(*) FROM journal;")).Should().Be(1);
+    }
+}
+
+/// <summary>
+/// 崩溃注入：MoveFileExW 已成功、"标记完成"事务还没提交时进程崩溃。
+/// 证明 Pending（含候选路径）在移动之前就已提交到磁盘，恢复按 file_id 在候选处找到文件并补标记完成。
+/// </summary>
+public sealed class CrashAfterMoveTests : IAsyncLifetime
+{
+    private const string IdA = "1A2B3C4D:000000000000000000000000000000AA";
+    private const string Src = @"C:\desk\a.txt";
+    private const string Dst = @"C:\vault\a.txt";
+    private const string Candidate = @"C:\vault\a (2).txt"; // 首选目标已占用，改名后的候选
+    private readonly TempDb _t = new();
+    public Task InitializeAsync() => _t.InitializeAsync();
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    /// <summary>模拟文件系统：文件 ID → 当前路径。</summary>
+    private sealed class Fs : IFileIdentity, IVaultIndex, IFileSystemProbe, IFileMover
+    {
+        public Dictionary<string, string> Files { get; } = new(StringComparer.OrdinalIgnoreCase) { [Src] = IdA };
+        public bool Moved { get; private set; }
+        public string? TryGetFileId(string fullPath) => Files.GetValueOrDefault(fullPath);
+        public IEnumerable<string> EnumerateFiles() => Files.Keys.Where(k => k.StartsWith(@"C:\vault\", StringComparison.OrdinalIgnoreCase)).ToList();
+        public bool IsDirectory(string path) => false;
+        public uint? GetAttributes(string path) => 0x20;
+
+        public async Task<Domain.Files.MoveResult> MoveAsync(string sourcePath, string targetPath,
+            Func<string, CancellationToken, Task>? beforeAttempt, CancellationToken ct = default)
+        {
+            if (beforeAttempt is not null) await beforeAttempt(targetPath, ct);
+            if (beforeAttempt is not null) await beforeAttempt(Candidate, ct); // 第一次 183，改名重试
+            Files.Remove(sourcePath);
+            Files[Candidate] = IdA; // MoveFileExW 成功
+            Moved = true;
+            return new Domain.Files.MoveResult.Moved(sourcePath, Candidate);
+        }
+    }
+
+    /// <summary>移动完成后，再开任何事务都"崩溃"（进程在标记完成前死掉）。</summary>
+    private sealed class CrashingDb(IUnitOfWorkFactory inner, Fs fs) : IUnitOfWorkFactory
+    {
+        public Task<IUnitOfWork> BeginAsync(CancellationToken ct = default) =>
+            fs.Moved ? throw new InvalidOperationException("simulated crash before mark-complete") : inner.BeginAsync(ct);
+    }
+
+    private sealed class Log : IRecoveryLog
+    {
+        public void UncertainPending(UncertainPendingEvent e) { }
+        public void RecoveryFailed(RecoveryFailedEvent e) { }
+    }
+
+    [Fact]
+    public async Task Crash_after_move_before_mark_complete_leaves_committed_pending_and_recovery_finishes_it()
+    {
+        var fs = new Fs();
+        var journal = new SqliteJournal();
+        var vault = new SqliteVaultRecordStore();
+        var sut = new JournaledMove(new CrashingDb(_t.Db, fs), fs, journal, fs, fs, new Log(), TimeProvider.System);
+
+        await FluentActions.Awaiting(() => sut.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<InvalidOperationException>();
+        fs.Moved.Should().BeTrue();
+
+        // "重启"：新连接读到的 Pending 已带候选路径——说明 Begin 与候选写入都在移动前提交
+        var pending = (await _t.Tx(u => journal.GetPendingAsync(u))).Should().ContainSingle().Subject;
+        (pending.Status, pending.FileId, pending.SourcePath, pending.TargetPath).Should().Be((JournalStatus.Pending, IdA, Src, Candidate));
+        (await _t.Scalar<string>("SELECT target_path FROM journal;")).Should().Be(Candidate);
+
+        var r = await new JournalRecovery(_t.Db, journal, fs, fs, vault, new SqliteLostFileNoticeStore(), new Log(), TimeProvider.System).RecoverAsync();
+
+        r.Should().ContainSingle().Which.Outcome.Should().Be(RecoveryOutcome.CommittedAtCandidate);
+        (await _t.Tx(u => journal.GetPendingAsync(u))).Should().BeEmpty();
+        (await _t.Scalar<string>("SELECT status FROM journal;")).Should().Be("Committed");
+        (await _t.Scalar<string>("SELECT actual_target_path FROM journal;")).Should().Be(Candidate, "恢复按 file_id 在候选处找到了文件");
+        (await _t.Tx(u => vault.FindByVaultPathAsync(u, Candidate)))!.FileId.Should().Be(IdA);
     }
 }

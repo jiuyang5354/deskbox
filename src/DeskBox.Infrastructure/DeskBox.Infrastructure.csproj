@@ -5,5 +5,8 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="..\DeskBox.Application\DeskBox.Application.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DeskBox.Application\DeskBox.Application.csproj" />
+    <ProjectReference Include="..\DeskBox.Infrastructure.Core\DeskBox.Infrastructure.Core.csproj" />
+  </ItemGroup>
 </Project>

@@ -1,10 +1,12 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using DeskBox.Application.Files;
 using DeskBox.Application.Ports;
 
 namespace DeskBox.Infrastructure.Files;
 
 /// <summary>MoveFileExW(src, dst, 0)：不替换已有文件，不允许跨卷复制。两端路径都先经 Win32PathNormalizer。</summary>
+[SupportedOSPlatform("windows")]
 public sealed partial class Win32NativeFileMove : INativeFileMove
 {
     private const uint NoFlags = 0;

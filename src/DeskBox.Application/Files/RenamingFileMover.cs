@@ -25,7 +25,7 @@ public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe p
     private async Task<MoveResult> Move(string source, string target, Func<string, CancellationToken, Task>? beforeAttempt, CancellationToken ct)
     {
         var attributes = probe.GetAttributes(source);
-        if (attributes is { } a && (a & Win32FileAttributes.CloudMask) != 0)
+        if (attributes is { } a && Win32FileAttributes.IsCloudOnly(a))
             return new MoveResult.Skipped(source, SkipReason.CloudOnly);
         if (IsUnder(source, folders.PublicDesktop))
             return new MoveResult.Skipped(source, SkipReason.NeedsAdmin);

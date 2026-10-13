@@ -43,7 +43,7 @@ public class QaAcceptanceTests
         JournalEntry? pending = null;
         journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>()).Returns(Task.CompletedTask);
         journal.CommitAsync(default!, default, default!, default).ReturnsForAnyArgs<Task>(_ => throw new IOException("模拟崩溃：Commit 前进程被杀"));
-        var jm = new JournaledMove(new FakeDb(), m, journal, Identity(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        var jm = new JournaledMove(new FakeDb(), m, journal, Identity(), Substitute.For<IFileSystemProbe>(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
         await FluentActions.Awaiting(() => jm.ExecuteAsync(Guid.NewGuid(), Src, Dst)).Should().ThrowAsync<IOException>();
         // 文件实际落在 notes (2).txt，但磁盘上能留给恢复逻辑的只有这条 Pending：
         // 它必须带 file_id，且在调用 MoveFileExW 之前已持久化了候选路径
@@ -68,7 +68,7 @@ public class QaAcceptanceTests
         var journal = Substitute.For<IJournal>();
         using var cts = new CancellationTokenSource();
         journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Any<JournalEntry>(), Arg.Any<CancellationToken>()).Returns(_ => { cts.Cancel(); return Task.CompletedTask; });
-        var jm = new JournaledMove(new FakeDb(), m, journal, Identity(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
+        var jm = new JournaledMove(new FakeDb(), m, journal, Identity(), Substitute.For<IFileSystemProbe>(), Substitute.For<IRecoveryLog>(), TimeProvider.System);
         await FluentActions.Awaiting(() => jm.ExecuteAsync(Guid.NewGuid(), Src, Dst, cts.Token)).Should().ThrowAsync<OperationCanceledException>();
         await journal.ReceivedWithAnyArgs(1).RollBackAsync(default!, default, default!, default);
     }
