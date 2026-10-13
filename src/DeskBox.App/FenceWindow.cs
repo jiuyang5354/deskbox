@@ -52,6 +52,20 @@ public sealed class FenceWindow : Window
 
     public Fence Fence { get; private set; }
 
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        // 兼容显示（降级）时把方框钉在最底：任何改 Z 序的请求都改成 HWND_BOTTOM（TDD v1.0.13 §4.5.3）
+        HwndSource.FromHwnd(Handle)?.AddHook(WndProc);
+    }
+
+    private static IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        // WM_WINDOWPOSCHANGING：兼容显示时压回 HWND_BOTTOM；WM_NCDESTROY：移除钉住登记
+        DeskBox.Infrastructure.Shell.Win32DesktopWindowing.OnWindowMessage(hwnd, msg, lParam);
+        return IntPtr.Zero;
+    }
+
     public FenceView View => _view;
 
     public IntPtr Handle => new WindowInteropHelper(this).Handle;
