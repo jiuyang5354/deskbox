@@ -86,16 +86,13 @@ jobs:
           dotnet publish src/DeskBox.App/DeskBox.App.csproj -c Release -r win-x64 --self-contained true -o publish/DeskBox
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Test-Path publish/DeskBox/DeskBox.App.exe)) { Write-Error 'DeskBox.App.exe missing from publish output'; exit 1 }
-          $zip = "DeskBox-preview-$sha-win-x64.zip"
-          Compress-Archive -Path publish/DeskBox/* -DestinationPath "publish/$zip"
-          "PREVIEW_ZIP=$zip" >> $env:GITHUB_ENV
-          Write-Output "Built publish/$zip"
+          "PREVIEW_NAME=DeskBox-preview-$sha-win-x64" >> $env:GITHUB_ENV
 
-      - name: Upload preview zip
+      - name: Upload preview build
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PREVIEW_ZIP }}
-          path: publish/${{ env.PREVIEW_ZIP }}
+          name: ${{ env.PREVIEW_NAME }}
+          path: publish/DeskBox/
           retention-days: 30
           if-no-files-found: error
