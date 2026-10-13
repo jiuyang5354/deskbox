@@ -11,7 +11,7 @@ public static class RuleDefaults
 /// <summary>待分类的桌面项描述。</summary>
 public sealed record DesktopEntry(string Name, bool IsDirectory, DateTimeOffset ModifiedAt)
 {
-    public string Extension => IsDirectory ? string.Empty : Path.GetExtension(Name).ToLowerInvariant();
+    public string Extension => IsDirectory ? string.Empty : DeskBox.Domain.Files.WinPath.GetExtension(Name).ToLowerInvariant();
 }
 
 /// <summary>规则条件：所有已设置的条件需同时满足（AND）。</summary>

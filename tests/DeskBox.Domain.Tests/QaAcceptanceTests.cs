@@ -59,8 +59,8 @@ public class QaAcceptanceTests
     [InlineData("a .", "a (2)")]
     public void QA03_conflict_name_strips_trailing_dot_space(string name, string expected)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "v");
-        ConflictNaming.WithIndex(Path.Combine(dir, name), 2, false).Should().Be(Path.Combine(dir, expected));
+        const string dir = @"C:\v";
+        ConflictNaming.WithIndex(WinPath.Combine(dir, name), 2, false).Should().Be(WinPath.Combine(dir, expected));
     }
 
     // QA-04 999 用尽：恰好调用 999 次（原名 + 2..999）

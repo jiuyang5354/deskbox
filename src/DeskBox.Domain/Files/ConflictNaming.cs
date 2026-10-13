@@ -10,15 +10,15 @@ public static class ConflictNaming
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (n is < FirstIndex or > MaxIndex) throw new ArgumentOutOfRangeException(nameof(n));
-        var dir = Path.GetDirectoryName(path) ?? string.Empty;
+        var dir = WinPath.GetDirectoryName(path);
         // Win32 会隐式裁掉文件名末尾的点和空格；生成改名目标时先裁掉，避免 "report. " → "report. (2)" 这类怪名。
         // 源文件访问不经过这里，仍使用原始名字（配合 \\?\ 前缀）。
-        var original = Path.GetFileName(path);
+        var original = WinPath.GetFileName(path);
         var trimmed = original.TrimEnd('.', ' ');
         var file = trimmed.Length == 0 ? original : trimmed;
-        var ext = isDirectory ? string.Empty : Path.GetExtension(file);
+        var ext = isDirectory ? string.Empty : WinPath.GetExtension(file);
         var stem = file[..^ext.Length];
         if (stem.Length == 0) (stem, ext) = (file, string.Empty); // ".gitignore" 这类无主名文件
-        return Path.Combine(dir, $"{stem} ({n}){ext}");
+        return WinPath.Combine(dir, $"{stem} ({n}){ext}");
     }
 }
