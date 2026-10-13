@@ -18,6 +18,10 @@
 - [ ] B1 正常开机自启：方框嵌在桌面图标层，`Win+D` 显示桌面后方框仍在。
 - [ ] B2 资源管理器未起来时（开机极早启动，或任务管理器结束 explorer.exe 后启动 DeskBox）：方框降级显示（置底窗口），不崩溃。
 - [ ] B3 任务管理器重启 explorer.exe：几秒内方框自动嵌回桌面（收到 `TaskbarCreated`）。
+- [ ] B4 Windows 11 24H2 / 25H2（`winver` 显示 24H2 或 25H2，build 26100 / 26200 起）：启动后几秒内桌面上能看到方框，能点到；`Win+D` 后仍在。看不到方框即不通过（P0，PR #24）。
+- [ ] B5 启动一次后，`%LOCALAPPDATA%\DeskBox\logs\deskbox.log` 存在，里面有 `Embed fence=` 行，带 `os=[build 26xxx.xxx, DisplayVersion 24H2/25H2]`、`layering=`、`parent=[...]`、`path=`；另有 `DesktopScanStarted` / `DesktopScanCompleted`（或只读时的 `DesktopScanSkipped`）。反馈问题时把这个文件发回来（只含文件名和数量，贴公开 issue 前注意文件名隐私）。
+- [ ] B6 兼容显示：若 B4 方框显示为普通置底窗口（日志里 `path=Fallback`），鼠标悬停托盘图标，提示为「DeskBox：桌面嵌入不可用，已切换为兼容显示」；不弹窗、不进只读模式，收纳和移动照常可用；点方框后它不会盖到其他窗口上面。
+- [ ] B7 24H2 / 25H2 上任务管理器重启 explorer.exe：几秒内方框重新嵌回桌面（日志出现新的 `Embed ... path=Embedded`，`parent=` 里的 Progman 句柄与重启前不同），托盘图标重新出现；之前若是兼容显示，托盘提示恢复为「DeskBox」。
 
 ## C. 多显示器
 - [ ] C1 方框放在副屏，拔掉副屏：方框临时出现在主屏工作区内，完整可见。
