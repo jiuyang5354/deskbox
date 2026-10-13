@@ -1,6 +1,6 @@
-# 《DeskBox 桌面收纳》PRD v1.2.3
+# 《DeskBox 桌面收纳》PRD v1.2.4
 
-> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost → v1.2.3 新增跳过原因 AlreadyInProgress（同一文件已有进行中的整理）。
+> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost → v1.2.3 新增跳过原因 AlreadyInProgress（同一文件已有进行中的整理） → v1.2.4 方框位置改为相对工作区的 DIP；显示器消失时方框临时挪到主屏、不落库，显示器回来后按原记录恢复；Orphaned 状态已废弃，被临时挪到主屏取代；补充低于 100% 缩放的已知限制；默认收纳库路径定为 `%USERPROFILE%\DeskBox\Vault`，与桌面不同盘时按跨盘跳过、不复制。
 
 ## 1. 背景与目标
 Windows 用户的桌面常堆满快捷方式、截图和临时文件。DeskBox 要做到：
@@ -37,17 +37,12 @@ stateDiagram-v2
   Expanded --> Hidden: Hide
   Collapsed --> Hidden: Hide
   Hidden --> Expanded: Show
-  Expanded --> Orphaned: MonitorLost
-  Collapsed --> Orphaned: MonitorLost
-  Hidden --> Orphaned: MonitorLost
-  Orphaned --> Expanded: MonitorRestored
   Expanded --> Deleted: Delete
   Collapsed --> Deleted: Delete
   Hidden --> Deleted: Delete
-  Orphaned --> Deleted: Delete
   Deleted --> [*]
 ```
-非法流转一律拒绝（抛 `InvalidTransitionException`）。暂存方框（`is_staging=1`）不可删除。Orphaned 方框的图标显示在主屏暂存方框中。
+非法流转一律拒绝（抛 `InvalidTransitionException`）。暂存方框（`is_staging=1`）不可删除。方框所在显示器拔出时**不改变方框状态**：方框整体临时显示在主屏工作区内（不写回数据库），显示器回来后按原记录恢复。原 Orphaned 状态已废弃，被临时挪到主屏取代（v1.2.4）。
 
 ### 3.2 一键整理任务（OrganizeJob）
 ```mermaid
@@ -75,9 +70,9 @@ stateDiagram-v2
 | fence | id | GUID | 必填 |
 | | title | string | 1–32 字符，去首尾空格 |
 | | monitor_id | string | 显示器指纹，必填 |
-| | x, y | int | 相对显示器的**物理像素** |
-| | width, height | int | ≥ 120 |
-| | **dpi** | int | 48–960，记录坐标时的 DPI（v1.1 新增） |
+| | x, y | int | 相对所在显示器**工作区**（不含任务栏）左上角的 **DIP**（与 DPI 无关的逻辑像素，96 DPI 下 1 DIP = 1 物理像素）（v1.2.4） |
+| | width, height | int | DIP，≥ 120（v1.2.4） |
+| | **dpi** | int | 48–960，只记录上次保存时所在显示器的 DPI，供诊断参考；**不参与位置换算**（v1.2.4） |
 | | opacity | int | 20–100 |
 | | is_staging | bool | 主屏暂存方框，不可删除 |
 | fence_item | file_path | string | **全局唯一**（一个文件只属于一个方框，v1.1） |
@@ -125,21 +120,22 @@ stateDiagram-v2
 | 其他磁盘错误 | 跳过（IoError） |
 | 路径超过 260 字符、文件名含 emoji 等 | 正常处理（长路径支持，Unicode 全支持） |
 | 桌面文件超过 2000 个 | 分批处理并显示进度条 |
-| 跨磁盘分区 | 跳过（CrossVolume），收纳库不跨分区 |
+| 跨磁盘分区 | 跳过（CrossVolume），收纳库不跨分区；默认路径 `%USERPROFILE%\DeskBox\Vault` 若与桌面不同盘，同样跳过、不复制（v1.2.4） |
 | OneDrive 仅云端文件 | 跳过（CloudOnly） |
 | 文件已被删除 | 跳过（NotFound），并从方框移除 |
 | 系统图标（此电脑、回收站） | 不移动，只映射 |
 | 整理中途崩溃 | 启动时先按 Journal 恢复 Pending 条目；每条单独处理，一条出错不影响其他条；同一条连续 3 次启动恢复失败 → 转为 Lost 并弹出 Lost 提示（v1.2.2） |
 | 恢复时文件按 file_id 找不到 | 标记为 Lost，弹出 Lost 提示（v1.2.2） |
 | Explorer 重启 | 自动重新嵌入桌面层 |
-| 显示器拔出 | 方框 → Orphaned，图标进主屏暂存方框；插回后恢复 |
+| 显示器拔出 | 该显示器上的方框**临时挪到主屏工作区内**完整显示，**不写回数据库**（库里仍是原显示器和原位置）；显示器插回后按原记录恢复位置和大小（v1.2.4） |
 | **DeskBox 崩溃导致桌面为空（P0）** | 托盘提供"临时显示系统桌面图标"应急开关；**连续 2 次在启动后 30 秒内崩溃 → 自动进入安全模式**（不接管图标）并提示用户 |
 | 首次启用 | 引导说明"图标由 DeskBox 显示，文件位置不会改变"，用户确认后才隐藏系统图标 |
 | 卸载 | 恢复系统桌面图标，收纳库文件全部还原 |
 
 ## 6. 系统集成
 - 开机自启：首次安装时让用户勾选；MSIX 用 `StartupTask`，EXE 安装包用 HKCU Run。
-- 多显示器 / DPI：按显示器指纹分别记住布局。
+- 多显示器 / DPI：按显示器分别记住布局；位置以工作区相对 DIP 存储，换缩放比例后方框位置和大小保持不变（v1.2.4）。
+- 默认收纳库路径：`%USERPROFILE%\DeskBox\Vault`（用户配置目录下）。与桌面不在同一磁盘时，整理按跨盘跳过（CrossVolume），**不复制**文件（v1.2.4）。
 - 检查更新：读取 GitHub Release latest 接口，稳定版 / 预览版两个通道，可在设置中关闭。
 
 ## 6A. 非功能需求
@@ -149,6 +145,7 @@ stateDiagram-v2
 - 一键整理 500 个文件 ≤ 2 秒；超过 2000 个文件分批执行并显示进度条，界面不卡顿。
 ### 兼容性
 - Win10 1809+ / Win11，x64；多显示器、不同 DPI 缩放、显示器拔插。
+- 已知限制（v1.2.4）：缩放低于 100% 时，位置换算后再保存可能有 1 像素以内的偏差；当前显示器标识换个登录会话可能变化，拔插或重新登录后方框可能回不到原来那块屏幕，后续改用硬件标识解决。
 - 路径超过 260 字符、文件名含 emoji / 生僻字均可处理。
 - OneDrive 同步的桌面：仅云端文件不移动。
 ### 可靠性
@@ -221,9 +218,10 @@ Feature: 多显示器
   Scenario: 拔插显示器恢复布局
     Given 副屏上有方框"工作"
     When 拔掉副屏
-    Then "工作"变为 Orphaned，其图标显示在主屏暂存方框中
+    Then "工作"临时显示在主屏工作区内，完整可见
+    And 数据库中"工作"的显示器和位置保持不变
     When 重新插回副屏
-    Then "工作"回到原位置和大小
+    Then "工作"回到副屏上的原位置和大小
 
 Feature: 一键还原
   Scenario: 还原到整理前
