@@ -11,7 +11,7 @@ internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders
 {
     public Dictionary<string, uint> Attributes { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Dirs { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public string PublicDesktop { get; set; } = "/public/desktop";
+    public string PublicDesktop { get; set; } = @"C:\Users\Public\Desktop";
     public bool IsDirectory(string path) => Dirs.Contains(path);
     public uint? GetAttributes(string path) =>
         Attributes.TryGetValue(path, out var a) ? a : Files.ContainsKey(path) ? 0x20u : null;
@@ -36,8 +36,8 @@ internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders
 
 public class RenamingFileMoverTests
 {
-    private const string Src = "/desk/notes.txt";
-    private const string Dst = "/vault/notes.txt";
+    private const string Src = @"C:\desk\notes.txt";
+    private const string Dst = @"C:\vault\notes.txt";
     private readonly FakeFs _fs = new();
     private RenamingFileMover Mover => new(_fs, _fs, _fs);
     private RenamingFileMover With(INativeFileMove native) => new(native, _fs, _fs);
@@ -57,9 +57,9 @@ public class RenamingFileMoverTests
     {
         _fs.Files[Dst] = "original";
         var r = await Mover.MoveAsync(Src, Dst);
-        r.Should().Be(new MoveResult.Moved(Src, "/vault/notes (2).txt", Renamed: true));
+        r.Should().Be(new MoveResult.Moved(Src, @"C:\vault\notes (2).txt", Renamed: true));
         _fs.Files[Dst].Should().Be("original");
-        _fs.Files["/vault/notes (2).txt"].Should().Be("new");
+        _fs.Files[@"C:\vault\notes (2).txt"].Should().Be("new");
         _fs.Files.Should().NotContainKey(Src);
     }
 
@@ -76,11 +76,11 @@ public class RenamingFileMoverTests
     public async Task Exhausting_999_returns_name_conflict()
     {
         _fs.Files[Dst] = "o";
-        for (var n = 2; n <= 999; n++) _fs.Files[$"/vault/notes ({n}).txt"] = "o";
+        for (var n = 2; n <= 999; n++) _fs.Files[$@"C:\vault\notes ({n}).txt"] = "o";
         var r = await Mover.MoveAsync(Src, Dst);
         r.Should().Be(new MoveResult.Skipped(Src, SkipReason.NameConflict, Win32Errors.AlreadyExists));
         _fs.Attempts.Should().HaveCount(999);
-        _fs.Attempts[^1].Should().Be("/vault/notes (999).txt");
+        _fs.Attempts[^1].Should().Be(@"C:\vault\notes (999).txt");
         _fs.Files[Src].Should().Be("new");
     }
 
@@ -90,13 +90,13 @@ public class RenamingFileMoverTests
         // 第一次尝试时目标空闲但被别人抢先写入；第二次尝试前 (2) 也被抢占
         _fs.BeforeAttempt = dst =>
         {
-            if (dst == Dst || dst == "/vault/notes (2).txt") _fs.Files.TryAdd(dst, "other");
+            if (dst == Dst || dst == @"C:\vault\notes (2).txt") _fs.Files.TryAdd(dst, "other");
         };
         var r = await Mover.MoveAsync(Src, Dst);
-        r.Should().Be(new MoveResult.Moved(Src, "/vault/notes (3).txt", Renamed: true));
+        r.Should().Be(new MoveResult.Moved(Src, @"C:\vault\notes (3).txt", Renamed: true));
         _fs.Files[Dst].Should().Be("other");
-        _fs.Files["/vault/notes (2).txt"].Should().Be("other");
-        _fs.Files["/vault/notes (3).txt"].Should().Be("new");
+        _fs.Files[@"C:\vault\notes (2).txt"].Should().Be("other");
+        _fs.Files[@"C:\vault\notes (3).txt"].Should().Be("new");
     }
 
     [Fact]
@@ -109,13 +109,24 @@ public class RenamingFileMoverTests
     }
 
     [Fact]
+    public async Task Trailing_dot_space_source_keeps_original_name_target_is_trimmed()
+    {
+        _fs.Files[@"C:\desk\report. "] = "r";
+        _fs.Files[@"C:\vault\report. "] = "o";
+        var r = await Mover.MoveAsync(@"C:\desk\report. ", @"C:\vault\report. ");
+        r.Should().Be(new MoveResult.Moved(@"C:\desk\report. ", @"C:\vault\report (2)", Renamed: true));
+        _fs.Files[@"C:\vault\report (2)"].Should().Be("r");
+        _fs.Files[@"C:\vault\report. "].Should().Be("o");
+    }
+
+    [Fact]
     public async Task Directory_rename_has_no_extension_split()
     {
-        _fs.Files["/desk/a.b"] = "dir";
-        _fs.Files["/vault/a.b"] = "o";
-        _fs.Dirs.Add("/desk/a.b");
-        var r = await Mover.MoveAsync("/desk/a.b", "/vault/a.b");
-        ((MoveResult.Moved)r).TargetPath.Should().Be("/vault/a.b (2)");
+        _fs.Files[@"C:\desk\a.b"] = "dir";
+        _fs.Files[@"C:\vault\a.b"] = "o";
+        _fs.Dirs.Add(@"C:\desk\a.b");
+        var r = await Mover.MoveAsync(@"C:\desk\a.b", @"C:\vault\a.b");
+        ((MoveResult.Moved)r).TargetPath.Should().Be(@"C:\vault\a.b (2)");
     }
 
     [Theory]
@@ -166,26 +177,42 @@ public class RenamingFileMoverTests
     public async Task Public_desktop_item_skips_needs_admin_without_native_move()
     {
         var native = Substitute.For<INativeFileMove>();
-        (await With(native).MoveAsync("/PUBLIC/Desktop/app.lnk", Dst))
-            .Should().Be(new MoveResult.Skipped("/PUBLIC/Desktop/app.lnk", SkipReason.NeedsAdmin));
+        (await With(native).MoveAsync(@"c:\users\PUBLIC\desktop\app.lnk", Dst))
+            .Should().Be(new MoveResult.Skipped(@"c:\users\PUBLIC\desktop\app.lnk", SkipReason.NeedsAdmin));
         native.DidNotReceiveWithAnyArgs().Move(default!, default!);
     }
 
     [Theory]
-    [InlineData("/public/desktop/a.lnk", "/public/desktop", true)]
-    [InlineData("/public/desktop/a.lnk", "/public/desktop/", true)]
-    [InlineData("/public/desktopx/a.lnk", "/public/desktop", false)]
-    [InlineData("/public/desktop", "/public/desktop", false)]
-    [InlineData("/public/desktop/a.lnk", "", false)]
     [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"c:\users\public\DESKTOP\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop\", true)]
+    [InlineData(@"C:/Users/Public/Desktop/a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\\sub\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\..\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"\\?\C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"\\?\C:\Users\Public\Desktop", true)]
+    [InlineData(@"\\fs\home\Public\Desktop\a.lnk", @"\\FS\home\Public\Desktop", true)]
+    [InlineData(@"//fs/home/Public/Desktop/a.lnk", @"\\fs\home\Public\Desktop", true)]
+    [InlineData(@"\\?\UNC\fs\home\Public\Desktop\a.lnk", @"\\fs\home\Public\Desktop", true)]
+    [InlineData(@"C:\Users\Public\Desktopx\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop.old\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"\\?\C:\Users\Public\Desktopx\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop\..\Documents\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop\", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"D:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData(@"\\fs\other\Public\Desktop\a.lnk", @"\\fs\home\Public\Desktop", false)]
+    [InlineData(@"C:\Users\Public\Desktop\a.lnk", "", false)]
+    [InlineData(@"Desktop\a.lnk", @"C:\Users\Public\Desktop", false)]
+    [InlineData("/public/desktop/a.lnk", "/public/desktop", false)]
     public void Is_under(string path, string folder, bool expected) =>
         RenamingFileMover.IsUnder(path, folder).Should().Be(expected);
 
     [Fact]
     public async Task Missing_attributes_proceed_to_native_move_then_not_found()
     {
-        (await Mover.MoveAsync("/desk/gone.txt", Dst))
-            .Should().Be(new MoveResult.Skipped("/desk/gone.txt", SkipReason.NotFound, Win32Errors.FileNotFound));
+        (await Mover.MoveAsync(@"C:\desk\gone.txt", Dst))
+            .Should().Be(new MoveResult.Skipped(@"C:\desk\gone.txt", SkipReason.NotFound, Win32Errors.FileNotFound));
     }
 
     [Fact]
@@ -200,12 +227,16 @@ public class RenamingFileMoverTests
 public class ConflictNamingTests
 {
     [Theory]
-    [InlineData("/v/notes.txt", 2, false, "/v/notes (2).txt")]
-    [InlineData("/v/a.tar.gz", 999, false, "/v/a.tar (999).gz")]
-    [InlineData("/v/.gitignore", 3, false, "/v/.gitignore (3)")]
-    [InlineData("/v/noext", 2, false, "/v/noext (2)")]
-    [InlineData("/v/照片😀.png", 2, false, "/v/照片😀 (2).png")]
-    [InlineData("/v/my.folder", 2, true, "/v/my.folder (2)")]
+    [InlineData(@"C:\v\notes.txt", 2, false, @"C:\v\notes (2).txt")]
+    [InlineData(@"C:\v\a.tar.gz", 999, false, @"C:\v\a.tar (999).gz")]
+    [InlineData(@"C:\v\.gitignore", 3, false, @"C:\v\.gitignore (3)")]
+    [InlineData(@"C:\v\noext", 2, false, @"C:\v\noext (2)")]
+    [InlineData(@"C:\v\照片😀.png", 2, false, @"C:\v\照片😀 (2).png")]
+    [InlineData(@"C:\v\my.folder", 2, true, @"C:\v\my.folder (2)")]
+    [InlineData(@"C:\v\notes.txt. ", 2, false, @"C:\v\notes (2).txt")]
+    [InlineData(@"C:\v\report. ", 3, false, @"C:\v\report (3)")]
+    [InlineData(@"C:\v\dir . ", 2, true, @"C:\v\dir (2)")]
+    [InlineData(@"C:\v\...", 2, false, @"C:\v\... (2)")]
     public void Builds_names(string path, int n, bool dir, string expected) =>
         ConflictNaming.WithIndex(path, n, dir).Should().Be(expected);
 
@@ -213,13 +244,13 @@ public class ConflictNamingTests
     [InlineData(1)]
     [InlineData(1000)]
     public void Index_out_of_range(int n) =>
-        FluentActions.Invoking(() => ConflictNaming.WithIndex("/a.txt", n, false)).Should().Throw<ArgumentOutOfRangeException>();
+        FluentActions.Invoking(() => ConflictNaming.WithIndex(@"C:\a.txt", n, false)).Should().Throw<ArgumentOutOfRangeException>();
 
     [Fact]
     public void Long_path_supported()
     {
-        var p = "/" + new string('d', 300) + "/f.txt";
-        ConflictNaming.WithIndex(p, 2, false).Should().EndWith("/f (2).txt").And.HaveLength(p.Length + 4);
+        var p = @"C:\" + new string('d', 300) + @"\f.txt";
+        ConflictNaming.WithIndex(p, 2, false).Should().EndWith(@"\f (2).txt").And.HaveLength(p.Length + 4);
     }
 }
 
@@ -229,20 +260,20 @@ public class JournaledMoveTests
     public async Task Commits_actual_renamed_path()
     {
         var fs = new FakeFs();
-        fs.Files["/d/notes.txt"] = "n";
-        fs.Files["/v/notes.txt"] = "o";
+        fs.Files[@"C:\d\notes.txt"] = "n";
+        fs.Files[@"C:\v\notes.txt"] = "o";
         var journal = Substitute.For<IJournal>();
         JournalEntry? pending = null;
         await journal.AppendPendingAsync(Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
         var sut = new JournaledMove(new RenamingFileMover(fs, fs, fs), journal, TimeProvider.System);
         var job = Guid.NewGuid();
 
-        var r = await sut.ExecuteAsync(job, "/d/notes.txt", "/v/notes.txt");
+        var r = await sut.ExecuteAsync(job, @"C:\d\notes.txt", @"C:\v\notes.txt");
 
         ((MoveResult.Moved)r).Renamed.Should().BeTrue();
         pending!.JobId.Should().Be(job);
-        pending.TargetPath.Should().Be("/v/notes.txt");
-        await journal.Received(1).CommitAsync(pending.Id, "/v/notes (2).txt", Arg.Any<CancellationToken>());
+        pending.TargetPath.Should().Be(@"C:\v\notes.txt");
+        await journal.Received(1).CommitAsync(pending.Id, @"C:\v\notes (2).txt", Arg.Any<CancellationToken>());
         await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default, default!);
     }
 

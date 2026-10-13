@@ -7,7 +7,7 @@ namespace DeskBox.Application.Ports;
 /// <summary>桌面上的一个项目（用户桌面或公共桌面）。</summary>
 public sealed record DesktopItem(string FullPath, string FileId, bool IsDirectory, bool IsPublicDesktop, DateTimeOffset ModifiedAt)
 {
-    public DesktopEntry ToEntry() => new(Path.GetFileName(FullPath), IsDirectory, ModifiedAt);
+    public DesktopEntry ToEntry() => new(WinPath.GetFileName(FullPath), IsDirectory, ModifiedAt);
 }
 
 public enum DesktopChangeKind { Created, Deleted, Renamed, Changed }
