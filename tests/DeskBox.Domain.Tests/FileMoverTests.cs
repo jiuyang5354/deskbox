@@ -109,6 +109,17 @@ public class RenamingFileMoverTests
     }
 
     [Fact]
+    public async Task Trailing_dot_space_source_keeps_original_name_target_is_trimmed()
+    {
+        _fs.Files["/desk/report. "] = "r";
+        _fs.Files["/vault/report. "] = "o";
+        var r = await Mover.MoveAsync("/desk/report. ", "/vault/report. ");
+        r.Should().Be(new MoveResult.Moved("/desk/report. ", "/vault/report (2)", Renamed: true));
+        _fs.Files["/vault/report (2)"].Should().Be("r");
+        _fs.Files["/vault/report. "].Should().Be("o");
+    }
+
+    [Fact]
     public async Task Directory_rename_has_no_extension_split()
     {
         _fs.Files["/desk/a.b"] = "dir";
@@ -222,6 +233,10 @@ public class ConflictNamingTests
     [InlineData("/v/noext", 2, false, "/v/noext (2)")]
     [InlineData("/v/照片😀.png", 2, false, "/v/照片😀 (2).png")]
     [InlineData("/v/my.folder", 2, true, "/v/my.folder (2)")]
+    [InlineData("/v/notes.txt. ", 2, false, "/v/notes (2).txt")]
+    [InlineData("/v/report. ", 3, false, "/v/report (3)")]
+    [InlineData("/v/dir . ", 2, true, "/v/dir (2)")]
+    [InlineData("/v/...", 2, false, "/v/... (2)")]
     public void Builds_names(string path, int n, bool dir, string expected) =>
         ConflictNaming.WithIndex(path, n, dir).Should().Be(expected);
 
