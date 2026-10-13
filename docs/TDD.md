@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.2
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.3
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -68,6 +68,18 @@ flowchart TD
 
 6. 成功时 `Moved.Renamed = (n > 1)`，UI 据此提示"已自动改名"。还原到被占用的原路径走同一算法。
 7. `JournaledMove`：Pending 记录意图路径；成功后 `Commit(actualTargetPath)` 记录**实际落盘路径**；跳过则 `RollBack(abortReason)`，中止原因含原始错误码。
+
+### 4.1.1 路径规范化（v1.0.3）
+所有传给 Win32 文件 API（`MoveFileExW`、`GetFileAttributesW` 等）的路径都必须经过 `Win32PathNormalizer.Normalize`（Application 层纯函数，可在 Linux 上测试）：
+- `C:\a\b` → `\\?\C:\a\b`；`\\server\share\a` → `\\?\UNC\server\share\a`，从而支持超过 260 字符的路径；
+- 已带 `\\?\` 或 `\\.\` 前缀的路径原样返回；
+- 只接受盘符绝对路径或 UNC 路径，`a\b`、`C:a`、`\a` 等相对路径直接拒绝，**绝不依赖当前工作目录**；
+- `/` 统一为 `\`，合并重复分隔符，解析 `.` / `..`（越过根目录则拒绝）；
+- **保留文件名末尾的空格和点**（如 `report. `、`a .`）：带前缀后 Win32 不再隐式裁剪，否则会操作到另一个文件；
+- Unicode / emoji 文件名原样保留（UTF-16 传参）。
+
+### 4.1.2 跳过原因文案
+界面文案集中在 `DeskBox.Application/Resources/Strings.resx`（默认 zh-CN，键为 `SkipReason` 枚举名），通过 `SkipReasonText.Get` 读取；单测保证每个枚举值都有文案。日志与 Journal 仍使用 `Skipped.AbortReason`（如 `NeedsAdmin (Win32 5)`）。
 
 ### 4.2 整理任务状态机修订
 - `Cancel` 只允许在 Classifying（尚未动文件）；Created / Snapshotting / Applying 均不可取消。
