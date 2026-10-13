@@ -1,5 +1,6 @@
 using DeskBox.Domain.Entities;
 using DeskBox.Domain.Files;
+using DeskBox.Domain.Geometry;
 using DeskBox.Domain.Rules;
 
 namespace DeskBox.Application.Ports;
@@ -83,7 +84,8 @@ public interface ISnapshotStore
     Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
 }
 
-public sealed record MonitorInfo(string Fingerprint, int Left, int Top, int Width, int Height, int Dpi, bool IsPrimary);
+/// <summary>显示器（物理像素，Per-Monitor V2）。Fingerprint 为稳定标识，WorkArea 为去掉任务栏后的可见区域。</summary>
+public sealed record MonitorInfo(string Fingerprint, ScreenRect Bounds, ScreenRect WorkArea, int Dpi, bool IsPrimary);
 
 /// <summary>显示器信息与拔插、DPI 变化通知。</summary>
 public interface IMonitorService
@@ -92,15 +94,55 @@ public interface IMonitorService
     event EventHandler? MonitorsChanged;
 }
 
-/// <summary>桌面层宿主：WorkerW 嵌入、系统图标显隐（FWF_NOICONS）、Explorer 重启自愈。</summary>
-public interface IDesktopHost
+/// <summary>
+/// 桌面层 Win32 调用（TDD §4.5）。只做 SendMessage / FindWindow / SetParent / SetWindowPos 这类公开窗口 API，
+/// 不注入 DLL、不装钩子。所有句柄都是"当次查找"的结果，调用方不得跨 Explorer 重启缓存。
+/// </summary>
+public interface IDesktopWindowing
 {
-    bool IsAttached { get; }
-    bool AreSystemIconsHidden { get; }
-    void Attach(IntPtr windowHandle);
-    void Detach();
-    void SetSystemIconsHidden(bool hidden);
-    event EventHandler? ExplorerRestarted;
+    /// <summary>找 Progman 窗口；没有桌面（无 Explorer / 非交互会话）时返回 <see cref="IntPtr.Zero"/>。</summary>
+    IntPtr FindProgman();
+
+    /// <summary>向 Progman 发 0x052C（带超时），让它生成壁纸层 WorkerW。返回消息是否送达。</summary>
+    bool SpawnWorkerW(IntPtr progman);
+
+    /// <summary>找到图标层之后的 WorkerW（Win11 24H2 起为 Progman 的子窗口）；找不到返回 Zero。</summary>
+    IntPtr FindWorkerW(IntPtr progman);
+
+    bool IsWindow(IntPtr hwnd);
+
+    IntPtr GetParent(IntPtr hwnd);
+
+    /// <summary>设置父窗口；parent 为 Zero 表示还原为普通顶层窗口。返回是否成功。</summary>
+    bool SetParent(IntPtr child, IntPtr parent);
+
+    /// <summary>降级模式：作为普通顶层窗口放到 Z 序最底（HWND_BOTTOM，不激活）。</summary>
+    void SetBottomMost(IntPtr hwnd);
+
+    /// <summary>按<b>屏幕物理像素</b>放置窗口；已嵌入时实现负责换算到父窗口客户区坐标。</summary>
+    void SetBounds(IntPtr hwnd, ScreenRect screen);
+}
+
+/// <summary>Explorer 广播给顶层窗口的通知（RegisterWindowMessage("TaskbarCreated")、WM_DISPLAYCHANGE）。</summary>
+public interface IShellNotifications
+{
+    /// <summary>Explorer（任务栏）重新创建：旧的 Progman / WorkerW 句柄全部作废。</summary>
+    event EventHandler? TaskbarCreated;
+}
+
+/// <summary>方框窗口的创建者（UI 层实现）。Explorer 重启时旧 WorkerW 的子窗口随之销毁，需要重建。</summary>
+public interface IBoxWindows
+{
+    /// <summary>返回该方框当前存活的窗口句柄；不存在或已销毁时新建。</summary>
+    IntPtr Ensure(Fence fence);
+}
+
+/// <summary>方框持久化。位置的唯一来源（TDD §4.5.2）。</summary>
+public interface IFenceStore
+{
+    Task<IReadOnlyList<Fence>> ListAsync(IUnitOfWork uow, CancellationToken ct = default);
+    Task<Fence?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
+    Task UpsertAsync(IUnitOfWork uow, Fence fence, CancellationToken ct = default);
 }
 
 /// <summary>规则引擎端口。</summary>
