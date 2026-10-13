@@ -34,7 +34,7 @@ jobs:
           # 匹配到 0 条、或只跳过不执行，都必须失败（看 trx 的 executed，不算 notExecuted）。
           # 不再把 VSTest 退出码 8（零测试）当成成功。
           dotnet test DeskBox.sln -c Release --no-build `
-            --filter "Category=WindowsIntegration" `
+            --filter "Category=WindowsIntegration&FullyQualifiedName~__RedProofNoMatch__" `
             --logger trx --results-directory TestResults
           $code = $LASTEXITCODE
           if ($code -ne 0 -and $code -ne 8) { exit $code }
