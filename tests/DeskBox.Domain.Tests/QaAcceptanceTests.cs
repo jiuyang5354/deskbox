@@ -54,7 +54,7 @@ public class QaAcceptanceTests
     }
 
     // QA-03 尾随空格/点：先剥掉末尾点和空格再拆扩展名（PRD v1.2.2）
-    [Theory(Skip = "P2-2 待修复：修复 PR 中去掉 Skip")]
+    [Theory]
     [InlineData("report. ", "report (2)")]
     [InlineData("a .", "a (2)")]
     public void QA03_conflict_name_strips_trailing_dot_space(string name, string expected)
