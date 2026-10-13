@@ -181,6 +181,87 @@ public class FenceCommandTests
     }
 
     [Fact]
+    public async Task Delete_moves_items_to_staging_after_existing_in_one_transaction_without_MoveFileExW()
+    {
+        var existing = new FenceItem(Guid.NewGuid(), _staging.Id, @"C:\d\s.txt", "1A2B3C4D:000000000000000000000000000000CC", sortOrder: 4);
+        _items.Rows[existing.Id] = existing;
+        var commits = _db.Commits;
+        var r = await _sut.ExecuteAsync(new DeleteFenceCommand(_a.Id));
+        r.Should().Be(new CommandResult(CommandStatus.Ok, Count: 2));
+        _fences.Rows.Should().NotContainKey(_a.Id);
+        var staged = _items.Rows.Values.Where(i => i.FenceId == _staging.Id).OrderBy(i => i.SortOrder).ToList();
+        staged.Select(i => i.Id).Should().Equal(existing.Id, _item.Id, _public.Id);
+        staged.Select(i => i.SortOrder).Should().Equal(4, 5, 6);
+        _items.Rows.Values.Should().NotContain(i => i.FenceId == _a.Id);
+        _db.Commits.Should().Be(commits + 1, "改归属与删方框在同一个事务");
+        _native.DidNotReceiveWithAnyArgs().Move(default!, default!);
+    }
+
+    [Fact]
+    public async Task Delete_without_staging_fence_is_rejected_and_nothing_changes()
+    {
+        _fences.Rows.Remove(_staging.Id);
+        var r = await _sut.ExecuteAsync(new DeleteFenceCommand(_a.Id));
+        r.Should().Be(new CommandResult(CommandStatus.Rejected, FenceUiText.NoStagingFence));
+        _fences.Rows.Should().ContainKey(_a.Id);
+        _items.Rows[_item.Id].FenceId.Should().Be(_a.Id);
+    }
+
+    [Fact]
+    public async Task Delete_flow_confirms_once_and_notice_uses_in_transaction_count()
+    {
+        var prompts = new List<string>();
+        var confirm = Substitute.For<IUserConfirmation>();
+        confirm.Confirm(Arg.Any<string>()).Returns(c =>
+        {
+            prompts.Add(c.Arg<string>());
+            // 确认框打开期间方框里又多了一个文件
+            var late = new FenceItem(Guid.NewGuid(), _a.Id, @"C:\d\late.txt", "1A2B3C4D:000000000000000000000000000000DD", sortOrder: 9);
+            _items.Rows[late.Id] = late;
+            return true;
+        });
+        var o = await new FenceDeleteFlow(_sut, confirm).RunAsync(_a.Id);
+        prompts.Should().Equal(FenceUiText.ConfirmDelete(2));
+        o.Result!.Count.Should().Be(3, "以事务内重新读到的为准");
+        o.Notice.Should().Be(FenceUiText.Deleted(3)).And.Contain("3 个文件");
+        confirm.ReceivedWithAnyArgs(1).Confirm(default!);
+    }
+
+    [Fact]
+    public async Task Delete_flow_cancel_does_nothing()
+    {
+        var confirm = Substitute.For<IUserConfirmation>();
+        confirm.Confirm(Arg.Any<string>()).Returns(false);
+        var o = await new FenceDeleteFlow(_sut, confirm).RunAsync(_a.Id);
+        (o.Result, o.Notice).Should().Be(((CommandResult?)null, (string?)null));
+        _fences.Rows.Should().ContainKey(_a.Id);
+        _items.Rows[_item.Id].FenceId.Should().Be(_a.Id);
+    }
+
+    [Fact]
+    public async Task Delete_flow_empty_fence_deletes_without_confirm()
+    {
+        var confirm = Substitute.For<IUserConfirmation>();
+        var o = await new FenceDeleteFlow(_sut, confirm).RunAsync(_b.Id);
+        confirm.DidNotReceiveWithAnyArgs().Confirm(default!);
+        o.Result!.IsOk.Should().BeTrue();
+        o.Notice.Should().Be(FenceUiText.Deleted(0));
+        _fences.Rows.Should().NotContainKey(_b.Id);
+    }
+
+    [Fact]
+    public async Task Delete_flow_read_only_and_staging_report_reason()
+    {
+        var confirm = Substitute.For<IUserConfirmation>();
+        confirm.Confirm(Arg.Any<string>()).Returns(true);
+        (await new FenceDeleteFlow(_sut, confirm).RunAsync(_staging.Id)).Notice.Should().Be(FenceUiText.StagingCannotDelete);
+        ReadOnly();
+        var o = await new FenceDeleteFlow(_sut, confirm).RunAsync(_a.Id);
+        o.Result!.Status.Should().Be(CommandStatus.ReadOnly);
+        _items.Rows[_item.Id].FenceId.Should().Be(_a.Id);
+    }
+
+    [Fact]
     public async Task Delete_staging_fence_is_rejected_by_domain()
     {
         var r = await _sut.ExecuteAsync(new DeleteFenceCommand(_staging.Id));

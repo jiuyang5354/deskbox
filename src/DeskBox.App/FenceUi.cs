@@ -65,6 +65,15 @@ public sealed class FenceUi(IDesktopWindowing windowing, IMonitorService monitor
         if (cmd is not null) await RunAsync(cmd);
     }
 
+    /// <summary>删除方框：先弹确认（N 个文件会移到暂存方框），同意才执行。</summary>
+    public async Task DeleteFenceAsync(Guid fenceId)
+    {
+        var outcome = await new FenceDeleteFlow(commands, new MessageBoxConfirmation()).RunAsync(fenceId);
+        if (outcome.Result is null) return;
+        if (outcome.Notice is { } notice) MessageBox.Show(notice, "DeskBox", MessageBoxButton.OK, MessageBoxImage.Information);
+        await RefreshAsync();
+    }
+
     private void Highlight()
     {
         foreach (var w in _windows.Values) w.SetDropTarget(_itemDrag?.IsDropTarget(w.Fence.Id) == true);
@@ -108,6 +117,13 @@ public sealed class FenceUi(IDesktopWindowing windowing, IMonitorService monitor
             if (all.Count > 0) Windowing.SetBounds(w.Handle, FenceLayout.Place(s.Fence, all));
         }
     }
+}
+
+/// <summary>删除确认：确定 / 取消，默认取消，Esc = 取消。</summary>
+public sealed class MessageBoxConfirmation : IUserConfirmation
+{
+    public bool Confirm(string message) =>
+        MessageBox.Show(message, "删除方框", MessageBoxButton.OKCancel, MessageBoxImage.Question, MessageBoxResult.Cancel) == MessageBoxResult.OK;
 }
 
 /// <summary>WPF 界面线程调度。</summary>

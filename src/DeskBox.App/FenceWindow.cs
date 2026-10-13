@@ -174,7 +174,7 @@ public sealed class FenceWindow : Window
                 await _ui.RunAsync(new ToggleCollapseCommand(Fence.Id));
                 break;
             case FenceMenuAction.Delete:
-                await _ui.RunAsync(new DeleteFenceCommand(Fence.Id));
+                await _ui.DeleteFenceAsync(Fence.Id);
                 break;
             case FenceMenuAction.Opacity when opacity is { } o:
                 await _ui.RunAsync(new SetFenceOpacityCommand(Fence.Id, o));

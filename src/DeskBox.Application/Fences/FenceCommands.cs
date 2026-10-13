@@ -13,7 +13,8 @@ public enum CommandStatus
     Rejected,
 }
 
-public sealed record CommandResult(CommandStatus Status, string? Reason = null)
+/// <summary>Count：删除方框时在事务内实际移到暂存方框的文件数，其他命令为 0。</summary>
+public sealed record CommandResult(CommandStatus Status, string? Reason = null, int Count = 0)
 {
     public static CommandResult Ok { get; } = new(CommandStatus.Ok);
     public bool IsOk => Status == CommandStatus.Ok;

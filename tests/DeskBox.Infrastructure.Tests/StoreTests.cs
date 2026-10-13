@@ -576,3 +576,53 @@ public sealed class FenceItemStoreTests : IAsyncLifetime
         (await _t.Tx(u => _fences.GetAsync(u, _b.Id)))!.IsCollapsed.Should().BeFalse();
     }
 }
+
+public sealed class DeleteFenceSqliteTests : IAsyncLifetime
+{
+    private readonly TempDb _t = new();
+    public Task InitializeAsync() => _t.InitializeAsync();
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    [Fact]
+    public async Task Delete_command_reassigns_items_to_staging_before_cascade_can_remove_them()
+    {
+        var fences = new SqliteFenceStore();
+        var items = new SqliteFenceItemStore();
+        var a = new Fence(Guid.NewGuid(), "A", "m", 0, 0, 200, 200);
+        var staging = new Fence(Guid.NewGuid(), "暂存", "m", 0, 0, 200, 200, isStaging: true);
+        var i1 = new FenceItem(Guid.NewGuid(), a.Id, @"C:\d\1", "1A2B3C4D:000000000000000000000000000000A1", sortOrder: 0);
+        var i2 = new FenceItem(Guid.NewGuid(), a.Id, @"C:\d\2", "1A2B3C4D:000000000000000000000000000000A2", sortOrder: 1);
+        await _t.Tx(async u =>
+        {
+            await fences.UpsertAsync(u, a); await fences.UpsertAsync(u, staging);
+            await items.UpsertAsync(u, i1); await items.UpsertAsync(u, i2);
+        });
+        var sut = new DeskBox.Application.Fences.FenceCommandHandler(_t.Db, fences, items,
+            NSubstituteFree.Monitors(), NSubstituteFree.NoVault(), new DeskBox.Application.Startup.OperatingMode());
+
+        var r = await sut.ExecuteAsync(new DeskBox.Application.Fences.DeleteFenceCommand(a.Id));
+
+        (r.IsOk, r.Count).Should().Be((true, 2));
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM fence_item;")).Should().Be(2, "级联没有删掉任何映射");
+        (await _t.Tx(u => items.ListByFenceAsync(u, staging.Id))).Select(i => i.Id).Should().Equal(i1.Id, i2.Id);
+        (await _t.Tx(u => fences.GetAsync(u, a.Id))).Should().BeNull();
+    }
+}
+
+internal static class NSubstituteFree
+{
+    private sealed class M : IMonitorService
+    {
+        public IReadOnlyList<MonitorInfo> GetMonitors() => [];
+        public event EventHandler? MonitorsChanged { add { } remove { } }
+    }
+
+    private sealed class V : DeskBox.Application.Fences.IVaultItemMover
+    {
+        public Task<DeskBox.Domain.Files.MoveResult> MoveToVaultAsync(string sourcePath, CancellationToken ct = default) =>
+            throw new InvalidOperationException("删方框不得移动文件");
+    }
+
+    public static IMonitorService Monitors() => new M();
+    public static DeskBox.Application.Fences.IVaultItemMover NoVault() => new V();
+}

@@ -53,6 +53,10 @@ public sealed class FenceCommandHandler(IUnitOfWorkFactory db, IFenceStore fence
         return WithFenceAsync(cmd.FenceId, f => f.ToggleCollapse(), ct);
     }
 
+    /// <summary>
+    /// 删方框（PM 决定）：先在同一个事务里把它的 fence_item 全部改归属到暂存方框（排在暂存已有项之后，保持原相对顺序），再删方框行。
+    /// 只改数据库，不移动文件；属于改归属，只读时拒绝。
+    /// </summary>
     public async Task<CommandResult> ExecuteAsync(DeleteFenceCommand cmd, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(cmd);
@@ -62,11 +66,29 @@ public sealed class FenceCommandHandler(IUnitOfWorkFactory db, IFenceStore fence
             var fence = await fences.GetAsync(u, cmd.FenceId, ct);
             if (fence is null) return NotFound();
             if (!fence.CanDelete) return new CommandResult(CommandStatus.Rejected, FenceUiText.StagingCannotDelete);
+            var moving = await items.ListByFenceAsync(u, fence.Id, ct);
+            if (moving.Count > 0)
+            {
+                var staging = (await fences.ListAsync(u, ct)).FirstOrDefault(f => f.IsStaging);
+                if (staging is null) return new CommandResult(CommandStatus.Rejected, FenceUiText.NoStagingFence);
+                var existing = await items.ListByFenceAsync(u, staging.Id, ct);
+                var next = existing.Count == 0 ? 0 : existing.Max(i => i.SortOrder) + 1;
+                foreach (var item in moving.OrderBy(i => i.SortOrder))
+                {
+                    item.MoveToFence(staging.Id, next++);
+                    await items.UpsertAsync(u, item, ct);
+                }
+            }
             fence.Delete();
             await fences.DeleteAsync(u, fence.Id, ct);
-            return CommandResult.Ok;
+            // 实际移动数以事务内重新读到的为准（可能与确认时显示的不同）
+            return new CommandResult(CommandStatus.Ok, Count: moving.Count);
         }, ct);
     }
+
+    /// <summary>删除前确认文案用：该方框当前的文件数。</summary>
+    public Task<int> CountItemsAsync(Guid fenceId, CancellationToken ct = default) =>
+        db.InTransactionAsync(async u => (await items.ListByFenceAsync(u, fenceId, ct)).Count, ct);
 
     public async Task<CommandResult> ExecuteAsync(ReassignItemCommand cmd, CancellationToken ct = default)
     {
