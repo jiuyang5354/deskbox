@@ -415,6 +415,20 @@ Feature: 桌面嵌入兼容显示（v1.2.7）
     Then 方框重新挂到桌面层
     And 托盘图标提示恢复正常
 
+  Scenario: 新层级下正常嵌入
+    Given Windows 11 24H2 及以后，WorkerW 是 Progman 的子窗口
+    When 启动 DeskBox 并嵌入桌面层
+    Then 嵌入校验通过
+    And 方框挂在 Progman 下面，位于 SHELLDLL_DefView 之上，能看见也能点到
+    And 托盘图标提示正常，不出现「兼容显示」字样
+
+  Scenario: 已嵌入时 Explorer 重启，旧层级切换到新层级
+    Given 方框已按旧层级嵌入（WorkerW 是顶层窗口）
+    When Explorer 重启并广播 TaskbarCreated，且新的窗口树是新层级（WorkerW 挂在 Progman 下面）
+    Then DeskBox 重新完整走一遍层级判断、嵌入和校验，不沿用旧的父窗口句柄
+    And 方框重新挂到 Progman 下面，能看见
+    And 托盘图标提示正常
+
 Feature: 日志文件（v1.2.7）
   Scenario: 日志写入固定目录并滚动
     Given DeskBox 正在运行
