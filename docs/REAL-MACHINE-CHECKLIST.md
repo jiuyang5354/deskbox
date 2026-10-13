@@ -22,6 +22,7 @@
 - [ ] B5 启动一次后，`%LOCALAPPDATA%\DeskBox\logs\deskbox.log` 存在，里面有 `Embed fence=` 行，带 `os=[build 26xxx.xxx, DisplayVersion 24H2/25H2]`、`layering=`、`parent=[...]`、`path=`；另有 `DesktopScanStarted` / `DesktopScanCompleted`（或只读时的 `DesktopScanSkipped`）。反馈问题时把这个文件发回来（只含文件名和数量，贴公开 issue 前注意文件名隐私）。
 - [ ] B6 兼容显示：若 B4 方框显示为普通置底窗口（日志里 `path=Fallback`），鼠标悬停托盘图标，提示为「DeskBox：桌面嵌入不可用，已切换为兼容显示」；不弹窗、不进只读模式，收纳和移动照常可用；点方框后它不会盖到其他窗口上面。
 - [ ] B7 24H2 / 25H2 上任务管理器重启 explorer.exe：几秒内方框重新嵌回桌面（日志出现新的 `Embed ... path=Embedded`，`parent=` 里的 Progman 句柄与重启前不同），托盘图标重新出现；之前若是兼容显示，托盘提示恢复为「DeskBox」。
+- [ ] B8 24H2 / 25H2 正常嵌入（方框为 `WS_CHILD`，挂在 Progman 下）时双击方框标题重命名：能正常输入英文；切换到中文输入法后候选窗出现在输入框附近，能选字上屏；按 Enter 保存、Esc 取消都生效，重启后名字仍在。
 
 ## C. 多显示器
 - [ ] C1 方框放在副屏，拔掉副屏：方框临时出现在主屏工作区内，完整可见。
