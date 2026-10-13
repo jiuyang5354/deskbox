@@ -217,13 +217,16 @@ public class VaultRecordTests
 
 public class JournalEntryTests
 {
-    private static JournalEntry Make() => new(Guid.NewGuid(), Guid.NewGuid(), "s", "t", DateTimeOffset.UnixEpoch);
+    private const string Fid = "1a2b3c4d:00112233445566778899aabbccddeeff";
+    private static JournalEntry Make() => new(Guid.NewGuid(), Guid.NewGuid(), Fid, "s", "t", DateTimeOffset.UnixEpoch);
 
     [Fact]
-    public void Starts_pending_and_commits()
+    public void Starts_pending_with_file_id_and_commits()
     {
         var e = Make();
         e.Status.Should().Be(JournalStatus.Pending);
+        e.FileId.Should().Be(Fid.ToUpperInvariant());
+        (e.TargetPath, e.Attempt).Should().Be(("t", 0));
         e.ActualTargetPath.Should().BeNull();
         FluentActions.Invoking(() => e.Commit(" ")).Should().Throw<DomainValidationException>();
         e.Status.Should().Be(JournalStatus.Pending);
@@ -231,6 +234,19 @@ public class JournalEntryTests
         e.Status.Should().Be(JournalStatus.Committed);
         e.ActualTargetPath.Should().Be("t (2)");
         FluentActions.Invoking(() => e.RollBack("x")).Should().Throw<InvalidTransitionException>().Which.From.Should().Be("Committed");
+    }
+
+    [Fact]
+    public void Begin_attempt_updates_candidate_only_while_pending()
+    {
+        var e = Make();
+        e.BeginAttempt("t");
+        e.BeginAttempt("t (2)");
+        (e.TargetPath, e.Attempt).Should().Be(("t (2)", 2));
+        FluentActions.Invoking(() => e.BeginAttempt("")).Should().Throw<DomainValidationException>();
+        e.Commit("t (2)");
+        FluentActions.Invoking(() => e.BeginAttempt("t (3)")).Should().Throw<InvalidTransitionException>().Which.Trigger.Should().Be("BeginAttempt");
+        e.TargetPath.Should().Be("t (2)");
     }
 
     [Fact]
@@ -242,14 +258,56 @@ public class JournalEntryTests
         e.Status.Should().Be(JournalStatus.RolledBack);
         e.AbortReason.Should().Be("Locked (Win32 32)");
         FluentActions.Invoking(() => e.Commit("x")).Should().Throw<InvalidTransitionException>().Which.Trigger.Should().Be("Commit");
+        FluentActions.Invoking(e.MarkLost).Should().Throw<InvalidTransitionException>();
+    }
+
+    [Fact]
+    public void Lost_is_terminal()
+    {
+        var e = Make();
+        e.MarkLost();
+        e.Status.Should().Be(JournalStatus.Lost);
+        FluentActions.Invoking(() => e.Commit("x")).Should().Throw<InvalidTransitionException>().Which.From.Should().Be("Lost");
     }
 
     [Fact]
     public void Invalid_args_throw()
     {
-        FluentActions.Invoking(() => new JournalEntry(Guid.Empty, Guid.NewGuid(), "s", "t", default)).Should().Throw<DomainValidationException>();
-        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.Empty, "s", "t", default)).Should().Throw<DomainValidationException>();
-        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "", "t", default)).Should().Throw<DomainValidationException>();
-        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "s", "", default)).Should().Throw<DomainValidationException>();
+        FluentActions.Invoking(() => new JournalEntry(Guid.Empty, Guid.NewGuid(), Fid, "s", "t", default)).Should().Throw<DomainValidationException>();
+        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.Empty, Fid, "s", "t", default)).Should().Throw<DomainValidationException>();
+        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), "bad", "s", "t", default)).Should().Throw<DomainValidationException>().Which.Field.Should().Be("FileId");
+        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), Fid, "", "t", default)).Should().Throw<DomainValidationException>();
+        FluentActions.Invoking(() => new JournalEntry(Guid.NewGuid(), Guid.NewGuid(), Fid, "s", "", default)).Should().Throw<DomainValidationException>();
+    }
+}
+
+public class LostFileNoticeTests
+{
+    private const string Fid = "1a2b3c4d:00112233445566778899aabbccddeeff";
+
+    [Theory]
+    [InlineData(@"C:\Users\u\Desktop\notes.txt", "notes.txt")]
+    [InlineData("/d/照片😀.png", "照片😀.png")]
+    [InlineData(@"C:\dir\", @"C:\dir\")]
+    public void File_name_extracted(string path, string name) =>
+        new LostFileNotice(Guid.NewGuid(), Fid, path, default).FileName.Should().Be(name);
+
+    [Fact]
+    public void Acknowledge_once()
+    {
+        var n = new LostFileNotice(Guid.NewGuid(), Fid, "a", DateTimeOffset.UnixEpoch);
+        n.IsAcknowledged.Should().BeFalse();
+        n.FileId.Should().Be(Fid.ToUpperInvariant());
+        n.Acknowledge(DateTimeOffset.UnixEpoch.AddHours(1));
+        (n.IsAcknowledged, n.AcknowledgedAt).Should().Be((true, DateTimeOffset.UnixEpoch.AddHours(1)));
+        FluentActions.Invoking(() => n.Acknowledge(default)).Should().Throw<InvalidTransitionException>();
+    }
+
+    [Fact]
+    public void Invalid_args()
+    {
+        FluentActions.Invoking(() => new LostFileNotice(Guid.Empty, Fid, "a", default)).Should().Throw<DomainValidationException>();
+        FluentActions.Invoking(() => new LostFileNotice(Guid.NewGuid(), "x", "a", default)).Should().Throw<DomainValidationException>();
+        FluentActions.Invoking(() => new LostFileNotice(Guid.NewGuid(), Fid, " ", default)).Should().Throw<DomainValidationException>();
     }
 }

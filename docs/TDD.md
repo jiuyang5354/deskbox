@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.3
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.4
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -67,7 +67,32 @@ flowchart TD
 | 其他 | — | IoError | |
 
 6. 成功时 `Moved.Renamed = (n > 1)`，UI 据此提示"已自动改名"。还原到被占用的原路径走同一算法。
-7. `JournaledMove`：Pending 记录意图路径；成功后 `Commit(actualTargetPath)` 记录**实际落盘路径**；跳过则 `RollBack(abortReason)`，中止原因含原始错误码。
+7. `JournaledMove`（v1.0.4，见 4.3）：Begin 时记录 file_id；每次尝试前写候选路径；成功 `Commit(actualTargetPath)`，跳过 `RollBack(abortReason)`。
+
+### 4.3 Journal 与崩溃恢复（v1.0.4，修复 P0-1 / P1-1）
+**写入顺序**
+1. Begin：用 `IFileIdentity` 读取源文件 file_id（卷序列号 + 128 位文件 ID）；读不到则不移动、不记日志，返回 `Skipped(NotFound)`。写入 Pending（含 file_id、源路径、初始目标）。
+2. 每次调用 `MoveFileExW` **之前**，`IFileMover` 的 `beforeAttempt` 回调把本次候选路径和尝试序号写入 Pending（`IJournal.UpdateCandidateAsync`）；改名重试时更新。因此在任意一次尝试前后被杀，Pending 中的候选路径都指向唯一可能的落点。
+3. 成功 → `Commit(实际路径)`；跳过 → `RollBack("Locked (Win32 32)" 等)`。
+
+**取消与异常（P1-1）**：`JournaledMove` 捕获 `OperationCanceledException` 及探测异常：
+- 能证明未移动 —— 尚未发起任何原生尝试，或源路径 file_id 仍是它且候选路径不是它 —— 立即 `RollBack("Cancelled" / "Interrupted (异常类型)"，带 ", verified not moved")`；
+- 无法证明（含验证时探测再次失败）—— 保留 Pending，写结构化日志 `IRecoveryLog.UncertainPending(EntryId, JobId, FileId, SourcePath, CandidatePath, Attempt, ExceptionType, Message)`，交给下次启动恢复。异常继续向上抛出。
+
+**启动恢复 `JournalRecovery`**（先于桌面层嵌入），对每条 Pending 按 file_id：
+| 检查 | 结果 |
+|---|---|
+| 源路径的 file_id 匹配 | `RollBack("Recovered: source intact")`（Abort） |
+| 候选路径的 file_id 匹配 | 写 `vault_record` + `Commit(候选路径)` |
+| 扫描收纳库（`IVaultIndex`），按 file_id 匹配 | 写 `vault_record` + `Commit(找到的路径)`；同名但 file_id 不同的已有文件不会被误认 |
+| 都找不到 | `MarkLost`（新状态 Lost，终态），写入持久的 `LostFileNotice` |
+
+`LostFileNotice` 每次启动都会提示，直到用户确认（`LostFileNotices.AcknowledgeAllAsync`）。文案（Strings.resx 键 `LostFilesNotice`）：
+> 有 {0} 个文件在上次整理中断后没能找回：{1}。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。
+
+{1} 为文件名列表，以"、"分隔。
+
+**测试**：杀进程模拟覆盖第 1–4 次尝试的移动前 / 移动后（共 8 种），验证恢复结果分别为 Abort / Commit 到候选路径，且已有同名文件不被改动；另覆盖收纳库扫描、Lost 提示持久与确认、取消与探测异常。
 
 ### 4.1.1 路径规范化（v1.0.3）
 所有传给 Win32 文件 API（`MoveFileExW`、`GetFileAttributesW` 等）的路径都必须经过 `Win32PathNormalizer.Normalize`（Application 层纯函数，可在 Linux 上测试）：

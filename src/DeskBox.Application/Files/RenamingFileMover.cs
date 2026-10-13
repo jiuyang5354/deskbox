@@ -10,15 +10,19 @@ namespace DeskBox.Application.Files;
 /// 预检查（不调用原生移动）：仅云端文件 → CloudOnly；位于公共桌面（两侧路径规范化后比较）→ NeedsAdmin。
 public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe probe, IKnownFolders folders) : IFileMover
 {
-    public Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default)
+    public Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default) =>
+        MoveAsync(sourcePath, targetPath, null, ct);
+
+    public Task<MoveResult> MoveAsync(string sourcePath, string targetPath,
+        Func<string, CancellationToken, Task>? beforeAttempt, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(targetPath);
         ct.ThrowIfCancellationRequested();
-        return Task.FromResult(Move(sourcePath, targetPath, ct));
+        return Move(sourcePath, targetPath, beforeAttempt, ct);
     }
 
-    private MoveResult Move(string source, string target, CancellationToken ct)
+    private async Task<MoveResult> Move(string source, string target, Func<string, CancellationToken, Task>? beforeAttempt, CancellationToken ct)
     {
         var attributes = probe.GetAttributes(source);
         if (attributes is { } a && (a & Win32FileAttributes.CloudMask) != 0)
@@ -30,6 +34,7 @@ public sealed class RenamingFileMover(INativeFileMove native, IFileSystemProbe p
         {
             ct.ThrowIfCancellationRequested();
             var candidate = n == 1 ? target : ConflictNaming.WithIndex(target, n, dir);
+            if (beforeAttempt is not null) await beforeAttempt(candidate, ct);
             var error = native.Move(source, candidate);
             if (error == Win32Errors.Success) return new MoveResult.Moved(source, candidate, Renamed: n > 1);
             if (error is Win32Errors.FileExists or Win32Errors.AlreadyExists) continue;

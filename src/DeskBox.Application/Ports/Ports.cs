@@ -30,13 +30,24 @@ public interface IFileIdentity
 /// <summary>安全移动文件：不覆盖、不跨分区；重名自动改名；失败返回 Skipped 而非抛异常。</summary>
 public interface IFileMover
 {
-    Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default);
+    /// <summary>
+    /// beforeAttempt 在每次原生移动尝试之前以候选目标路径调用（含首次与每次改名重试），
+    /// 调用方据此把候选路径写入 Journal。
+    /// </summary>
+    Task<MoveResult> MoveAsync(string sourcePath, string targetPath,
+        Func<string, CancellationToken, Task>? beforeAttempt, CancellationToken ct = default);
+
+    Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default) =>
+        MoveAsync(sourcePath, targetPath, null, ct);
 }
 
 /// <summary>移动操作预写日志，崩溃后可恢复。</summary>
 public interface IJournal
 {
     Task AppendPendingAsync(JournalEntry entry, CancellationToken ct = default);
+    /// <summary>每次原生移动尝试之前持久化候选目标路径与尝试序号。</summary>
+    Task UpdateCandidateAsync(Guid entryId, string candidatePath, int attempt, CancellationToken ct = default);
+    Task MarkLostAsync(Guid entryId, CancellationToken ct = default);
     Task CommitAsync(Guid entryId, string actualTargetPath, CancellationToken ct = default);
     Task RollBackAsync(Guid entryId, string abortReason, CancellationToken ct = default);
     Task<IReadOnlyList<JournalEntry>> GetPendingAsync(CancellationToken ct = default);
@@ -75,4 +86,32 @@ public interface IDesktopHost
 public interface IRuleEngine
 {
     Classification Classify(DesktopEntry entry);
+}
+
+/// <summary>收纳库内容枚举（恢复时按 file_id 扫描）。</summary>
+public interface IVaultIndex
+{
+    IEnumerable<string> EnumerateFiles();
+}
+
+public interface IVaultRecordStore
+{
+    Task AddAsync(VaultRecord record, CancellationToken ct = default);
+}
+
+/// <summary>找不回文件的提示，持久保存直到用户确认。</summary>
+public interface ILostFileNoticeStore
+{
+    Task AddAsync(LostFileNotice notice, CancellationToken ct = default);
+    Task<IReadOnlyList<LostFileNotice>> GetUnacknowledgedAsync(CancellationToken ct = default);
+    Task SaveAsync(LostFileNotice notice, CancellationToken ct = default);
+}
+
+/// <summary>移动被中断且无法证明文件未被移动时保留 Pending，并写结构化日志。</summary>
+public sealed record UncertainPendingEvent(Guid EntryId, Guid JobId, string FileId, string SourcePath,
+    string CandidatePath, int Attempt, string ExceptionType, string Message);
+
+public interface IRecoveryLog
+{
+    void UncertainPending(UncertainPendingEvent e);
 }
