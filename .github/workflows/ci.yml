@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build-test (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore DeskBox.sln
+
+      - name: Vulnerable package scan
+        shell: pwsh
+        run: |
+          $out = dotnet list DeskBox.sln package --vulnerable --include-transitive 2>&1 | Out-String
+          Write-Output $out
+          if ($out -match 'has the following vulnerable packages') { Write-Error 'Vulnerable NuGet packages found'; exit 1 }
+
+      - name: Build (Release, warnings as errors)
+        run: dotnet build DeskBox.sln -c Release --no-restore
+
+      - name: Test with coverage
+        run: >
+          dotnet test DeskBox.sln -c Release --no-build
+          --logger trx --results-directory TestResults
+          --collect:"XPlat Code Coverage"
+
+      - name: Coverage report
+        shell: pwsh
+        run: |
+          dotnet tool install -g dotnet-reportgenerator-globaltool
+          reportgenerator -reports:"TestResults/**/coverage.cobertura.xml" -targetdir:coverage -reporttypes:"JsonSummary;MarkdownSummaryGithub"
+          Get-Content coverage/SummaryGithub.md >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Coverage gate (Domain >= 90%, Application >= 85%)
+        shell: pwsh
+        run: |
+          $s = Get-Content coverage/Summary.json | ConvertFrom-Json
+          $gates = @{ 'DeskBox.Domain' = 90; 'DeskBox.Application' = 85 }
+          $fail = $false
+          foreach ($name in $gates.Keys) {
+            $asm = $s.coverage.assemblies | Where-Object { $_.name -eq $name }
+            if (-not $asm) { Write-Error "$name missing from coverage"; $fail = $true; continue }
+            Write-Output ("{0}: {1}% (min {2}%)" -f $name, $asm.coverage, $gates[$name])
+            if ([double]$asm.coverage -lt $gates[$name]) { $fail = $true }
+          }
+          if ($fail) { exit 1 }
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            TestResults/**/*.trx
+            coverage/
