@@ -32,12 +32,16 @@ public partial class App : System.Windows.Application
         {
             var ui = SynchronizationContext.Current;
             var instance = Own(new NamedMutexSingleInstance(ui));
+            // DB/logs 仍在 LocalAppData；收纳库按 PRD 用 %USERPROFILE%\DeskBox\Vault（与桌面更易同盘）。
+            // 未正式发布，不做 LocalAppData\DeskBox\Vault → UserProfile 的迁数据；旧路径有文件则忽略。
             var dataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeskBox");
+            var vaultDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "DeskBox", "Vault");
+            Directory.CreateDirectory(vaultDir);
             var dbPath = Path.Combine(dataDir, "deskbox.db");
             var db = new SqliteUnitOfWorkFactory(dbPath);
             var journal = new SqliteJournal();
             var log = new TraceRecoveryLog();
-            var recovery = new JournalRecovery(db, journal, new WindowsFileIdentity(), new VaultDirectoryIndex(Path.Combine(dataDir, "Vault")),
+            var recovery = new JournalRecovery(db, journal, new WindowsFileIdentity(), new VaultDirectoryIndex(vaultDir),
                 new SqliteVaultRecordStore(), new SqliteLostFileNoticeStore(), log, TimeProvider.System);
             var shell = Own(new Win32ShellNotifications(ui));
             var windowing = new Win32DesktopWindowing();

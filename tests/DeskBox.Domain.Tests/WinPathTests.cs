@@ -58,6 +58,36 @@ public class WinPathTests
         WinPath.IsSeparator(':').Should().BeFalse();
     }
 
+    [Theory]
+    [InlineData(@"C:\Users\u\Desktop\a.txt", @"C:\Users\u\DeskBox\Vault\a.txt", "C:")]
+    [InlineData(@"c:/desk/a.txt", @"C:\vault\a.txt", "C:")]
+    [InlineData(@"\\?\C:\desk\a.txt", @"C:\vault\a.txt", "C:")]
+    [InlineData(@"\\.\D:\x", @"D:/y", "D:")]
+    [InlineData(@"\\srv\share\a", @"\\SRV\share\b", @"\\SRV\SHARE")]
+    [InlineData(@"\\?\UNC\srv\share\a", @"\\srv\share\b", @"\\SRV\SHARE")]
+    public void Volume_key(string path, string other, string key)
+    {
+        WinPath.VolumeKey(path).Should().Be(key);
+        WinPath.VolumeKey(other).Should().Be(key);
+        WinPath.IsCrossVolume(path, other).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(@"C:\Users\u\Desktop\a.txt", @"D:\DeskBox\Vault\a.txt")]
+    [InlineData(@"C:\desk\a.txt", @"\\srv\share\a.txt")]
+    [InlineData(@"\\fs\home\a", @"\\fs\other\a")]
+    [InlineData(@"\\?\C:\a", @"\\?\D:\b")]
+    public void Cross_volume_when_roots_differ(string a, string b) =>
+        WinPath.IsCrossVolume(a, b).Should().BeTrue();
+
+    [Theory]
+    [InlineData("rel", @"C:\a")]
+    [InlineData(@"C:\a", "rel")]
+    [InlineData("", @"C:\a")]
+    [InlineData(@"\", @"C:\a")]
+    public void Relative_or_ambiguous_not_treated_as_cross_volume(string a, string b) =>
+        WinPath.IsCrossVolume(a, b).Should().BeFalse();
+
     [Fact]
     public void Guards()
     {
@@ -66,5 +96,8 @@ public class WinPathTests
         FluentActions.Invoking(() => WinPath.RootLength(null!)).Should().Throw<ArgumentNullException>();
         FluentActions.Invoking(() => WinPath.Combine(null!, "a")).Should().Throw<ArgumentNullException>();
         FluentActions.Invoking(() => WinPath.Combine("a", null!)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => WinPath.IsCrossVolume(null!, "a")).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => WinPath.IsCrossVolume("a", null!)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => WinPath.VolumeKey(null!)).Should().Throw<ArgumentNullException>();
     }
 }

@@ -95,4 +95,44 @@ public static class WinPath
             ? directory + name
             : directory + Separator + name;
     }
+
+    /// <summary>
+    /// 两侧均能识别卷根且不同卷时返回 true（同盘断言失败 → CrossVolume）。
+    /// 同卷、或任一侧无绝对根（相对路径）时返回 false，交由原生移动决定。
+    /// 盘符与 <c>\\?\</c> / <c>\\.\</c> 前缀等价；UNC 按 server\share 比较；不区分大小写，'/' 与 '\' 等价。
+    /// </summary>
+    public static bool IsCrossVolume(string pathA, string pathB)
+    {
+        ArgumentNullException.ThrowIfNull(pathA);
+        ArgumentNullException.ThrowIfNull(pathB);
+        return VolumeKey(pathA) is { } a && VolumeKey(pathB) is { } b && a != b;
+    }
+
+    /// <summary>卷标识：盘符为 "C:"；UNC 为 "\\SERVER\SHARE"。无法识别时返回 null。</summary>
+    public static string? VolumeKey(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        var len = RootLength(path);
+        if (len == 0) return null;
+
+        Span<char> buf = stackalloc char[len];
+        var n = 0;
+        for (var i = 0; i < len; i++)
+            buf[n++] = path[i] == '/' ? '\\' : path[i];
+        while (n > 0 && buf[n - 1] == '\\') n--;
+        if (n == 0) return null;
+        var root = new string(buf[..n]);
+
+        if (root.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+            return @"\\" + root[8..].ToUpperInvariant();
+        if (root.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)
+            || root.StartsWith(@"\\.\", StringComparison.OrdinalIgnoreCase))
+            root = root[4..];
+
+        if (root.Length >= 2 && char.IsAsciiLetter(root[0]) && root[1] == ':')
+            return char.ToUpperInvariant(root[0]) + ":";
+        if (root.StartsWith(@"\\", StringComparison.Ordinal))
+            return root.ToUpperInvariant();
+        return null;
+    }
 }

@@ -211,6 +211,28 @@ public class RenamingFileMoverTests
         native.DidNotReceiveWithAnyArgs().Move(default!, default!);
     }
 
+    [Fact]
+    public async Task Same_volume_allows_native_move()
+    {
+        var native = Substitute.For<INativeFileMove>();
+        native.Move(Src, Dst).Returns(Win32Errors.Success);
+        (await With(native).MoveAsync(Src, Dst)).Should().Be(new MoveResult.Moved(Src, Dst, Renamed: false));
+        native.Received(1).Move(Src, Dst);
+    }
+
+    [Fact]
+    public async Task Different_volume_skips_cross_volume_without_native_move_or_copy()
+    {
+        var native = Substitute.For<INativeFileMove>();
+        const string other = @"D:\DeskBox\Vault\notes.txt";
+        var r = (MoveResult.Skipped)await With(native).MoveAsync(Src, other);
+        r.Should().Be(new MoveResult.Skipped(Src, SkipReason.CrossVolume));
+        r.NativeErrorCode.Should().BeNull();
+        r.AbortReason.Should().Be("CrossVolume");
+        native.DidNotReceiveWithAnyArgs().Move(default!, default!);
+        _fs.Files.Should().ContainKey(Src);
+    }
+
     [Theory]
     [InlineData(@"C:\Users\Public\Desktop\a.lnk", @"C:\Users\Public\Desktop", true)]
     [InlineData(@"c:\users\public\DESKTOP\a.lnk", @"C:\Users\Public\Desktop", true)]
