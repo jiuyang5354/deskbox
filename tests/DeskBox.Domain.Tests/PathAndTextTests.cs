@@ -74,13 +74,13 @@ public class SkipReasonTextTests
 
     [Theory]
     [InlineData(SkipReason.Locked, "文件正被其他程序使用")]
-    [InlineData(SkipReason.CloudOnly, "这是 OneDrive 云端文件，未下载到本地")]
-    [InlineData(SkipReason.NeedsAdmin, "公共桌面文件需要管理员权限")]
-    [InlineData(SkipReason.NotFound, "文件已被删除或移动")]
-    [InlineData(SkipReason.CrossVolume, "收纳库和桌面不在同一个磁盘")]
-    [InlineData(SkipReason.ReadOnly, "文件所在磁盘处于写保护状态")]
-    [InlineData(SkipReason.NameConflict, "同名文件过多，无法自动改名")]
-    [InlineData(SkipReason.IoError, "未知错误，详见日志")]
+    [InlineData(SkipReason.CloudOnly, "这是 OneDrive 云端文件，还没下载到本机")]
+    [InlineData(SkipReason.NeedsAdmin, "公共桌面上的文件需要管理员权限")]
+    [InlineData(SkipReason.NotFound, "文件已被删除或移走")]
+    [InlineData(SkipReason.CrossVolume, "收纳库和桌面不在同一个磁盘上")]
+    [InlineData(SkipReason.ReadOnly, "磁盘处于写保护状态")]
+    [InlineData(SkipReason.NameConflict, "同名文件太多，无法自动改名")]
+    [InlineData(SkipReason.IoError, "未知错误，详情见日志")]
     public void Exact_texts(SkipReason reason, string expected)
     {
         SkipReasonText.Get(reason, CultureInfo.GetCultureInfo("zh-CN")).Should().Be(expected);
