@@ -143,6 +143,18 @@ public interface IFenceStore
     Task<IReadOnlyList<Fence>> ListAsync(IUnitOfWork uow, CancellationToken ct = default);
     Task<Fence?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
     Task UpsertAsync(IUnitOfWork uow, Fence fence, CancellationToken ct = default);
+    /// <summary>删除方框；其 fence_item 映射随之删除（ON DELETE CASCADE），磁盘文件不动。</summary>
+    Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
+}
+
+/// <summary>方框中的文件映射（fence_item，迁移 v3，TDD §4.7）。file_path 全局唯一。</summary>
+public interface IFenceItemStore
+{
+    Task<FenceItem?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
+    /// <summary>按 sort_order 升序。</summary>
+    Task<IReadOnlyList<FenceItem>> ListByFenceAsync(IUnitOfWork uow, Guid fenceId, CancellationToken ct = default);
+    Task UpsertAsync(IUnitOfWork uow, FenceItem item, CancellationToken ct = default);
+    Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
 }
 
 /// <summary>规则引擎端口。</summary>

@@ -26,6 +26,12 @@ public sealed class FenceItem
     /// <summary>公共桌面项可以映射到方框，但不能移入收纳库。</summary>
     public bool CanMoveToVault => !IsPublicDesktop;
 
+    /// <summary>移入收纳库前的领域校验（TDD §4.7 第 5 条）：公共桌面项拒绝。</summary>
+    public void EnsureCanMoveToVault()
+    {
+        if (IsPublicDesktop) throw new DomainValidationException(nameof(IsPublicDesktop), "公共桌面项不能移入收纳库");
+    }
+
     public void MoveToFence(Guid fenceId, int sortOrder)
     {
         if (fenceId == Guid.Empty) throw new DomainValidationException(nameof(FenceId), "不能为空");

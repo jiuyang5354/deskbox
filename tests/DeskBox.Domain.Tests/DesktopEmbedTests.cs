@@ -114,7 +114,14 @@ internal sealed class InMemoryFences : IFenceStore
         return Task.CompletedTask;
     }
 
-    private static Fence Clone(Fence f) => new(f.Id, f.Title, f.MonitorId, f.X, f.Y, f.Width, f.Height, f.Dpi, f.Opacity, f.IsStaging);
+    public Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default)
+    {
+        Rows.Remove(id);
+        return Task.CompletedTask;
+    }
+
+    private static Fence Clone(Fence f) =>
+        new(f.Id, f.Title, f.MonitorId, f.X, f.Y, f.Width, f.Height, f.Dpi, f.Opacity, f.IsStaging, f.IsCollapsed) { SortOrder = f.SortOrder };
 }
 
 public class DesktopEmbedTests

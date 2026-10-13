@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net8.0-windows</TargetFramework>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -18,5 +19,6 @@
     <Using Include="Xunit" />
     <Using Include="FluentAssertions" />
     <ProjectReference Include="..\..\src\DeskBox.Infrastructure\DeskBox.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\DeskBox.App\DeskBox.App.csproj" />
   </ItemGroup>
 </Project>

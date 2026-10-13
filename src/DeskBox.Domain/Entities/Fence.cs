@@ -29,7 +29,7 @@ public sealed class Fence
     public FenceState State => _state.State;
 
     public Fence(Guid id, string title, string monitorId, int x, int y, int width, int height,
-        int dpi = 96, int opacity = 85, bool isStaging = false)
+        int dpi = 96, int opacity = 85, bool isStaging = false, bool isCollapsed = false)
     {
         if (id == Guid.Empty) throw new DomainValidationException(nameof(Id), "不能为空");
         Id = id;
@@ -41,6 +41,20 @@ public sealed class Fence
         Opacity = ValidateOpacity(opacity);
         IsStaging = isStaging;
         _state = new FenceStateMachine();
+        if (isCollapsed) _state.Fire(FenceTrigger.Collapse);
+    }
+
+    /// <summary>折叠状态持久化在 fence.collapsed（迁移 v3，TDD §4.7）。</summary>
+    public bool IsCollapsed => State == FenceState.Collapsed;
+
+    /// <summary>暂存方框不能删除（TDD §4.7 第 5 条，Domain 层判断）。</summary>
+    public bool CanDelete => !IsStaging && _state.CanFire(FenceTrigger.Delete);
+
+    /// <summary>折叠 ↔ 展开。</summary>
+    public void ToggleCollapse()
+    {
+        if (IsCollapsed) Expand();
+        else Collapse();
     }
 
     public void Rename(string title) => Title = ValidateTitle(title);

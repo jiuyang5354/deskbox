@@ -30,6 +30,8 @@ jobs:
 
       - name: Test (Category=WindowsIntegration)
         shell: pwsh
+        env:
+          DESKBOX_SCREENSHOT_DIR: ${{ github.workspace }}\screenshots
         run: |
           # 匹配到 0 条、或只跳过不执行，都必须失败（看 trx 的 executed，不算 notExecuted）。
           # 不再把 VSTest 退出码 8（零测试）当成成功。
@@ -74,3 +76,11 @@ jobs:
           name: windows-integration-results
           path: TestResults/**/*.trx
           if-no-files-found: warn
+
+      - name: Upload fence UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fence-ui-screenshots
+          path: screenshots/*.png
+          if-no-files-found: error

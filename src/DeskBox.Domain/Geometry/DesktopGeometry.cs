@@ -41,4 +41,17 @@ public static class DesktopGeometry
         var y = Math.Clamp(r.Y, workArea.Y, workArea.Bottom - h);
         return new ScreenRect(x, y, w, h);
     }
+
+    /// <summary>
+    /// 存储位置（DIP，相对工作区）夹进工作区（TDD §4.7 第 3 条）：宽高不小于 minSize，也不大于工作区（工作区比 minSize 还小时取 minSize），
+    /// 再把左上角夹到 [0, 工作区 - 尺寸]。
+    /// </summary>
+    public static ScreenRect ClampStored(ScreenRect dip, int workAreaWidthDip, int workAreaHeightDip, int minSize)
+    {
+        var w = Math.Max(minSize, Math.Min(dip.Width, Math.Max(minSize, workAreaWidthDip)));
+        var h = Math.Max(minSize, Math.Min(dip.Height, Math.Max(minSize, workAreaHeightDip)));
+        var x = Math.Clamp(dip.X, 0, Math.Max(0, workAreaWidthDip - w));
+        var y = Math.Clamp(dip.Y, 0, Math.Max(0, workAreaHeightDip - h));
+        return new ScreenRect(x, y, w, h);
+    }
 }
