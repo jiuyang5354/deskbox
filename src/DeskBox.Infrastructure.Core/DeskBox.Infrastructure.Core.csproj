@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 不依赖 WPF 的基础设施（SQLite 持久化、收纳库索引、file_id 读取），以 net8.0 构建以便在任何宿主上跑集成测试 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- 覆盖传递依赖 2.1.6（GHSA-2m69-gcr7-jv3q，SQLite 漏洞，<= 2.1.11 受影响） -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DeskBox.Application\DeskBox.Application.csproj" />
+    <InternalsVisibleTo Include="DeskBox.Infrastructure.Tests" />
+  </ItemGroup>
+</Project>

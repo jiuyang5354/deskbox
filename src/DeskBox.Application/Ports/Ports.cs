@@ -59,6 +59,9 @@ public interface IUnitOfWorkFactory
 /// <summary>移动操作预写日志，崩溃后可恢复。所有操作都在调用方的工作单元内执行。</summary>
 public interface IJournal
 {
+    /// <summary>该 file_id（不区分大小写）是否已有 Pending。Begin 时与 Append 在同一事务里先查后写。</summary>
+    Task<bool> HasPendingAsync(IUnitOfWork uow, string fileId, CancellationToken ct = default);
+    /// <summary>写入 Pending。任何约束冲突都按错误抛出（调用方应先 <see cref="HasPendingAsync"/>）。</summary>
     Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default);
     /// <summary>每次原生移动尝试之前持久化候选目标路径与尝试序号。</summary>
     Task UpdateCandidateAsync(IUnitOfWork uow, Guid entryId, string candidatePath, int attempt, CancellationToken ct = default);
@@ -73,10 +76,11 @@ public interface IJournal
 /// <summary>整理快照存储（保留最近 10 份）。</summary>
 public interface ISnapshotStore
 {
-    Task SaveAsync(Snapshot snapshot, CancellationToken ct = default);
-    Task<Snapshot?> GetAsync(Guid id, CancellationToken ct = default);
-    Task<IReadOnlyList<Snapshot>> ListAsync(CancellationToken ct = default);
-    Task DeleteAsync(Guid id, CancellationToken ct = default);
+    Task SaveAsync(IUnitOfWork uow, Snapshot snapshot, CancellationToken ct = default);
+    Task<Snapshot?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
+    /// <summary>按创建时间倒序。</summary>
+    Task<IReadOnlyList<Snapshot>> ListAsync(IUnitOfWork uow, CancellationToken ct = default);
+    Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
 }
 
 public sealed record MonitorInfo(string Fingerprint, int Left, int Top, int Width, int Height, int Dpi, bool IsPrimary);

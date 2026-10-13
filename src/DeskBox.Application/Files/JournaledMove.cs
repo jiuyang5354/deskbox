@@ -22,7 +22,15 @@ public sealed class JournaledMove(IUnitOfWorkFactory db, IFileMover mover, IJour
         if (fileId is null) return new MoveResult.Skipped(source, SkipReason.NotFound);
 
         var entry = new JournalEntry(Guid.NewGuid(), jobId, fileId, source, target, clock.GetUtcNow());
-        await db.InTransactionAsync(u => journal.AppendPendingAsync(u, entry, ct), ct);
+        // 同一个 BEGIN IMMEDIATE 事务里先查后写：写锁已持有，两个进程同时 Begin 同一文件时只有一个能写入 Pending
+        var started = await db.InTransactionAsync(async u =>
+        {
+            if (await journal.HasPendingAsync(u, entry.FileId, ct)) return false;
+            await journal.AppendPendingAsync(u, entry, ct);
+            return true;
+        }, ct);
+        // 同一文件已有进行中的整理：不移动、不写日志、不碰那条 Pending
+        if (!started) return new MoveResult.Skipped(source, SkipReason.AlreadyInProgress);
 
         var attemptStarted = false;
         MoveResult result;

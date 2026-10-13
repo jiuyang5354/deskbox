@@ -81,6 +81,13 @@ internal sealed class InMemoryJournal : IJournal
     public Dictionary<Guid, JournalEntry> Entries { get; } = [];
     public int Failures(Guid id) => _failures.GetValueOrDefault(id);
 
+    public Task<bool> HasPendingAsync(IUnitOfWork uow, string fileId, CancellationToken ct = default)
+    {
+        FakeDb.Of(uow).Read();
+        return Task.FromResult(Entries.Values.Any(e => e.Status == JournalStatus.Pending &&
+            string.Equals(e.FileId, fileId, StringComparison.OrdinalIgnoreCase)));
+    }
+
     public Task AppendPendingAsync(IUnitOfWork uow, JournalEntry entry, CancellationToken ct = default)
     {
         if (Entries.ContainsKey(entry.Id)) throw new InvalidOperationException("UNIQUE constraint failed: journal.id");

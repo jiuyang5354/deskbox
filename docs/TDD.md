@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.5
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.6
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -7,7 +7,7 @@
 | UI | WPF + CommunityToolkit.Mvvm | 成熟、可嵌入桌面层 |
 | 托盘 | H.NotifyIcon | MIT |
 | Win32 互操作 | CsWin32 | 源生成，类型安全 |
-| 存储 | SQLite + Dapper | 单文件、事务、零部署 |
+| 存储 | SQLite（Microsoft.Data.Sqlite 8，参数化 SQL，不用 Dapper；v1.0.6） | 单文件、事务、零部署；仓储只有十几条 SQL，手写映射可以直接调用 `JournalEntry.Restore` 做状态校验 |
 | 日志 | Serilog（滚动，保留 7 天） | Apache 2.0 |
 | 测试 | xUnit + FluentAssertions + NSubstitute + coverlet | — |
 
@@ -20,6 +20,8 @@ flowchart TD
   Infrastructure[DeskBox.Infrastructure<br/>Shell 互操作/SQLite/文件IO] --> Application
   Application[DeskBox.Application<br/>用例 + 端口接口] --> Domain[DeskBox.Domain<br/>实体/状态机/规则引擎，无外部依赖]
   Infrastructure --> DB[(SQLite %LOCALAPPDATA%\DeskBox)]
+  InfraCore[DeskBox.Infrastructure.Core<br/>net8.0：SQLite 仓储/迁移、收纳库索引、file_id] --> Application
+  InfraCore --> DB
 ```
 
 ## 3. 端口接口（Application 层）
@@ -129,6 +131,79 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - `Cancel` 只允许在 Classifying（尚未动文件）；Created / Snapshotting / Applying 均不可取消。
 - Applying 中致命错误：Applying →(Fail)→ RollingBack →(RolledBack)→ Failed。
 - 方框状态机（含 Deleted 终态）不变，已被 PM 接受。
+
+### 4.4 SQLite 持久化（v1.0.6，DeskBox.Infrastructure.Core）
+`DeskBox.Infrastructure.Core` 目标框架为 `net8.0`，不依赖 WPF，所以集成测试能在任何宿主上对真实 SQLite 文件运行。Windows 专用的部分用 `[SupportedOSPlatform("windows")]` 标注。
+
+#### 4.4.1 连接、PRAGMA 与事务（架构要求）
+- **一个工作单元 = 一个连接 + 一个事务。**`SqliteUnitOfWorkFactory.BeginAsync` 每次新开一个连接，并且关闭连接池（`Pooling=False`），所以连接不会被其他工作单元或线程复用。同一个工作单元也不能被并发使用：同时执行两条命令会直接抛 `InvalidOperationException`。
+- **每次打开连接都执行以下 PRAGMA**，依次为：
+  1. `busy_timeout=5000`
+  2. `journal_mode=WAL`（返回值不是 `wal` 就拒绝启动）
+  3. `synchronous=FULL`
+  4. `foreign_keys=ON`
+
+  除 WAL 外，其余都是连接级设置，不会被新连接继承，所以必须每次都设。
+- **事务一律 `BEGIN IMMEDIATE`。**开事务时就拿写锁，等锁由 `busy_timeout` 处理，避免在事务中途从读锁升级为写锁时遇到 SQLITE_BUSY。驱动层还会按 `Default Timeout=30s` 重试。
+- **释放时未提交就回滚。**`CommitAsync` 只能调用一次；已结束的工作单元不能再执行命令。
+- **仓储不得自行打开连接。**所有仓储只能通过 `SqliteUnitOfWork.From(uow)` 取得当前连接和事务，传入其他类型的工作单元会抛 `ArgumentException`。
+- **SQL 全部参数化。**状态值只使用枚举名常量。
+
+#### 4.4.2 DDL（迁移 v1，版本号记在 `PRAGMA user_version`）
+- `journal`
+  - 列：`id` TEXT PK、`job_id`、`file_id`（大写）、`source_path`、`target_path`、`attempt` INTEGER ≥ 0、`status`、`actual_target_path` NULL、`abort_reason` NULL、`recovery_failures` INTEGER NOT NULL DEFAULT 0 ≥ 0、`created_at`（ISO 8601，含时区）。
+  - `status` 带 CHECK 约束，取值为 Pending / Committed / RolledBack / Lost。
+  - 索引 `ix_journal_status`；部分唯一索引 `ux_journal_pending_file_id ON journal(file_id) WHERE status='Pending'`，同一文件同时最多一条 Pending。
+- `vault_record`
+  - 列：`id` PK、`original_path` COLLATE NOCASE、`vault_path` COLLATE NOCASE、`file_id`、`moved_at`、`restored_at` NULL。
+  - 部分唯一索引 `ux_vault_record_vault_path ON vault_record(vault_path) WHERE restored_at IS NULL`：只约束仍在库中的记录，还原后同一路径可以再次收纳；按路径查询时优先返回在库中的记录。普通索引 `ix_vault_record_file_id`。
+- `lost_file_notice`
+  - 列：`journal_entry_id` PK，外键引用 `journal(id)`；`file_id`、`original_path`、`detected_at`、`acknowledged_at` NULL。
+  - 索引 `ix_lost_file_notice_unack`。
+- `snapshot`
+  - 列：`id` PK、`trigger_kind`（CHECK：Manual / Auto / BeforeRestore）、`created_at`。
+  - 索引 `ix_snapshot_created_at`。
+- `snapshot_entry`
+  - 列：`snapshot_id`，外键引用 `snapshot(id)`，ON DELETE CASCADE；`ordinal`、`file_id`、`file_path`、`fence_id` NULL、`x`、`y`。
+  - 主键 (`snapshot_id`, `ordinal`)。
+
+**时间格式**：所有时间列都以 UTC 文本保存，格式固定为 `yyyy-MM-ddTHH:mm:ss.fffZ`（定长，所以按文本排序就是按时间排序）。统一由 `SqliteTime.Format` / `SqliteTime.Parse` 处理：写入时先转成 UTC，并截断到毫秒；读出的值 Offset 为 0。
+
+**AlreadyInProgress**
+- **先查后写，同一事务**：在 Begin 阶段、调用 MoveFileExW 之前，`JournaledMove` 在同一个 `BEGIN IMMEDIATE` 事务里依次执行：
+  1. `IJournal.HasPendingAsync(uow, fileId)`，即 `SELECT 1 FROM journal WHERE file_id = upper(?) AND status = 'Pending'`。file_id 一律以大写保存，所以这等价于 OrdinalIgnoreCase 比较，并且能用上部分索引。
+  2. 已有 Pending 时直接返回 `Skipped(AlreadyInProgress)`，`AbortReason` 为 "AlreadyInProgress"；否则执行 `AppendPendingAsync` 写入 Pending。
+- **为什么不会有竞争**：`BEGIN IMMEDIATE` 一开事务就持有写锁，两个进程同时 Begin 同一文件时会被串行化，后到的一方一定能查到先到的那条 Pending。
+- **不是错误**：跳过时不移动文件，不写日志，也不改动另一条 Pending。
+- **唯一冲突一律按错误抛出**：`AppendPendingAsync` 是普通 INSERT，任何唯一约束冲突都作为 `SqliteException` 抛出，包括绕过预检查直接插入时撞上 `ux_journal_pending_file_id`（2067）和主键冲突（1555）。不再根据错误消息判断冲突，也不再使用 SAVEPOINT 或 `JournalConflictException`。部分唯一索引只作为最后一道防线。
+- **测试**：
+  - 结构测试：journal 上唯一一个包含 file_id 的唯一索引就是这个部分索引；
+  - 已有 Pending 时返回 AlreadyInProgress；
+  - 绕过预检查直接插入会抛异常；
+  - 两个 `DeskBox.SqliteWriter` 子进程同时 Begin 同一 file_id：最终恰好一条 Pending，另一方得到 AlreadyInProgress，两边都没有错误。
+- 用户文案在 Strings.resx 中，键为 `AlreadyInProgress`，值为“这个文件正在整理中，已跳过”（PRD v1.2.3）。
+
+**迁移规则**
+- 数据库尚未发布，v1.0.6 的评审修改（两个部分唯一索引、NOCASE、UTC 时间格式）直接改写迁移 v1，不另加迁移版本。发布之后，任何结构变化都必须作为新的迁移追加。
+- `SqliteSchema.MigrateAsync` 在 `BEGIN IMMEDIATE` 事务里先读版本，再逐个执行迁移并提升版本号。两个进程同时启动时，后到的那个会等先到的提交后再读版本，因此可以重复调用。
+- 数据库版本高于程序支持的版本时拒绝启动。
+
+#### 4.4.3 其他实现
+- `ISnapshotStore` 也改为接收 `IUnitOfWork`，删除一份快照会级联删除它的所有条目。
+- `IVaultIndex` 由 `VaultDirectoryIndex` 实现：递归枚举收纳库里的文件和文件夹，跳过无权访问的目录和重解析点。
+- `IFileIdentity` 由 `WindowsFileIdentity` 实现：用 `CreateFileW` 以只读属性、全共享、`FILE_FLAG_BACKUP_SEMANTICS | OPEN_REPARSE_POINT` 打开，再用 `GetFileInformationByHandleEx(FileIdInfo)` 读取，格式化为 `卷序列号8位:文件ID32位`。
+
+#### 4.4.4 测试
+集成测试使用临时目录下的真实数据库文件，覆盖：
+- 每个连接上 PRAGMA 是否生效；
+- `BEGIN IMMEDIATE` 一开始就拿写锁：另一连接立刻遇到 SQLITE_BUSY；
+- 未提交释放时回滚，事务内出异常时整体回滚；
+- 已结束或并发使用的工作单元被拒绝；
+- 每个仓储的往返读写、状态必须为 Pending 的约束、UNIQUE / 主键 / 外键 / CHECK 约束、快照级联删除；
+- `JournalRecovery` 跑在 SQLite 上的端到端流程：补提交、标记 Lost、UNIQUE 冲突时整条回滚，以及连续 3 次失败后转 Lost；
+- **双进程并发写**：测试进程和子进程 `DeskBox.SqliteWriter` 同时各写 150 条（每条两个事务）。要求子进程没有任何异常（包括 SQLITE_BUSY）、`PRAGMA integrity_check` = ok、记录条数精确。
+
+`WindowsFileIdentity` 的测试只在 Windows 上运行：验证改名（含末尾空格或点）后 file_id 不变、不同文件的 file_id 不同、目录也有 file_id。
 
 ## 5. 线程与性能
 UI 线程只渲染；枚举、规则匹配、IO 走 `Task.Run` + `Channel<T>`。图标 LRU 缓存 512 项；`VirtualizingWrapPanel` 支持 2000+ 文件。空闲无轮询（Explorer 巡检除外）。目标启动 ≤ 1.5 s，空闲内存 ≤ 80 MB。
