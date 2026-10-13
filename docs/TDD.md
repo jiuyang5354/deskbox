@@ -153,10 +153,10 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - `journal`
   - 列：`id` TEXT PK、`job_id`、`file_id`（大写）、`source_path`、`target_path`、`attempt` INTEGER ≥ 0、`status`、`actual_target_path` NULL、`abort_reason` NULL、`recovery_failures` INTEGER NOT NULL DEFAULT 0 ≥ 0、`created_at`（ISO 8601，含时区）。
   - `status` 带 CHECK 约束，取值为 Pending / Committed / RolledBack / Lost。
-  - 索引 `ix_journal_status`。
+  - 索引 `ix_journal_status`；部分唯一索引 `ux_journal_pending_file_id ON journal(file_id) WHERE status='Pending'`，同一文件同时最多一条 Pending。
 - `vault_record`
-  - 列：`id` PK、`original_path`、`vault_path` COLLATE NOCASE、`file_id`、`moved_at`、`restored_at` NULL。
-  - 唯一索引 `ux_vault_record_vault_path`，普通索引 `ix_vault_record_file_id`。
+  - 列：`id` PK、`original_path` COLLATE NOCASE、`vault_path` COLLATE NOCASE、`file_id`、`moved_at`、`restored_at` NULL。
+  - 部分唯一索引 `ux_vault_record_vault_path ON vault_record(vault_path) WHERE restored_at IS NULL`：只约束仍在库中的记录，还原后同一路径可以再次收纳；按路径查询时优先返回在库中的记录。普通索引 `ix_vault_record_file_id`。
 - `lost_file_notice`
   - 列：`journal_entry_id` PK，外键引用 `journal(id)`；`file_id`、`original_path`、`detected_at`、`acknowledged_at` NULL。
   - 索引 `ix_lost_file_notice_unack`。
@@ -167,7 +167,17 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   - 列：`snapshot_id`，外键引用 `snapshot(id)`，ON DELETE CASCADE；`ordinal`、`file_id`、`file_path`、`fence_id` NULL、`x`、`y`。
   - 主键 (`snapshot_id`, `ordinal`)。
 
+**时间格式**：所有时间列都以 UTC 文本保存，格式固定为 `yyyy-MM-ddTHH:mm:ss.fffZ`（定长，所以按文本排序就是按时间排序）。统一由 `SqliteTime.Format` / `SqliteTime.Parse` 处理：写入时先转成 UTC，并截断到毫秒；读出的值 Offset 为 0。
+
+**AlreadyInProgress**
+- 在 Begin 阶段、调用 MoveFileExW 之前，`SqliteJournal.AppendPendingAsync` 在 `SAVEPOINT append_pending` 里插入 Pending。
+- 只有当 `SqliteExtendedErrorCode == 2067`（SQLITE_CONSTRAINT_UNIQUE），并且错误消息点名 Pending 部分唯一索引（SQLite 的消息写作 `UNIQUE constraint failed: journal.file_id`）时，才回滚到这个保存点并抛出 `JournalConflictException`。此时工作单元仍然可用，同一次整理里的其他文件照常继续。
+- 其他唯一冲突（例如主键冲突 1555、`vault_path` 冲突）和其他错误都按原样抛出。
+- `JournaledMove` 收到 `JournalConflictException` 后返回 `Skipped(AlreadyInProgress)`，`AbortReason` 为 "AlreadyInProgress"。这不算错误：不移动文件，不写日志，也不改动另一条 Pending。
+- 用户文案在 Strings.resx 中，键为 `AlreadyInProgress`，值为“这个文件正在整理中，已跳过”（PRD v1.2.3）。
+
 **迁移规则**
+- 数据库尚未发布，v1.0.6 的评审修改（两个部分唯一索引、NOCASE、UTC 时间格式）直接改写迁移 v1，不另加迁移版本。发布之后，任何结构变化都必须作为新的迁移追加。
 - `SqliteSchema.MigrateAsync` 在 `BEGIN IMMEDIATE` 事务里先读版本，再逐个执行迁移并提升版本号。两个进程同时启动时，后到的那个会等先到的提交后再读版本，因此可以重复调用。
 - 数据库版本高于程序支持的版本时拒绝启动。
 
