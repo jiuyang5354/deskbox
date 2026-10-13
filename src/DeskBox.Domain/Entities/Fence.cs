@@ -2,7 +2,10 @@ using DeskBox.Domain.StateMachines;
 
 namespace DeskBox.Domain.Entities;
 
-/// <summary>桌面分区方框。坐标为相对所属显示器的物理像素，并记录 DPI。</summary>
+/// <summary>
+/// 桌面分区方框。X/Y/Width/Height 为 DIP（1/96 英寸），相对所属显示器（MonitorId）工作区左上角，
+/// 与显示器位置和缩放无关（TDD §4.5.2）。Dpi 仅记录最后一次保存时所在显示器的 DPI，换算不依赖它。
+/// </summary>
 public sealed class Fence
 {
     public const int TitleMaxLength = 32;

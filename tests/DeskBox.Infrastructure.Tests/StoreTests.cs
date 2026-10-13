@@ -471,3 +471,35 @@ public sealed class CrashAfterMoveTests : IAsyncLifetime
         (await _t.Tx(u => vault.FindByVaultPathAsync(u, Candidate)))!.FileId.Should().Be(IdA);
     }
 }
+
+public sealed class FenceStoreTests : IAsyncLifetime
+{
+    private readonly TempDb _t = new();
+    private readonly SqliteFenceStore _store = new();
+    public Task InitializeAsync() => _t.InitializeAsync();
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    [Fact]
+    public async Task Fence_roundtrips_upserts_and_orders()
+    {
+        var a = new Fence(Guid.NewGuid(), "工作", @"\\.\DISPLAY2", -40, 7, 300, 200, dpi: 144, opacity: 60, isStaging: true) { SortOrder = 2 };
+        var b = new Fence(Guid.NewGuid(), "B", @"\\.\DISPLAY1", 0, 0, 120, 120) { SortOrder = 1 };
+        await _t.Tx(u => _store.UpsertAsync(u, a));
+        await _t.Tx(u => _store.UpsertAsync(u, b));
+
+        var got = (await _t.Tx(u => _store.GetAsync(u, a.Id)))!;
+        (got.Title, got.MonitorId, got.X, got.Y, got.Width, got.Height, got.Dpi, got.Opacity, got.IsStaging, got.SortOrder)
+            .Should().Be(("工作", @"\\.\DISPLAY2", -40, 7, 300, 200, 144, 60, true, 2));
+        (await _t.Tx(u => _store.ListAsync(u))).Select(f => f.Id).Should().Equal(b.Id, a.Id);
+
+        a.MoveTo(@"\\.\DISPLAY1", 5, 6, 96);
+        a.Resize(400, 500);
+        await _t.Tx(u => _store.UpsertAsync(u, a));
+        (await _t.Tx(u => _store.GetAsync(u, a.Id)))!.Should().Match<Fence>(f => f.X == 5 && f.Width == 400 && f.MonitorId == @"\\.\DISPLAY1");
+        (await _t.Scalar<long>("SELECT COUNT(*) FROM fence;")).Should().Be(2);
+        (await _t.Tx(u => _store.GetAsync(u, Guid.NewGuid()))).Should().BeNull();
+        await FluentActions.Awaiting(() => _t.Tx(u => _store.UpsertAsync(u, null!))).Should().ThrowAsync<ArgumentNullException>();
+        await FluentActions.Awaiting(() => _t.Scalar<long>("INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging) VALUES ('x','t','m',0,0,10,10,96,80,0);"))
+            .Should().ThrowAsync<SqliteException>();
+    }
+}

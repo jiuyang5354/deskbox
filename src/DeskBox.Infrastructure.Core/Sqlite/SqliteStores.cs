@@ -251,3 +251,37 @@ public sealed class SqliteSnapshotStore : ISnapshotStore
             .ToList();
     }
 }
+
+/// <summary>方框存储：位置的唯一来源（嵌入 / Explorer 重启后都从这里读）。</summary>
+public sealed class SqliteFenceStore : IFenceStore
+{
+    private const string Columns = "id, title, monitor_id, x, y, width, height, dpi, opacity, is_staging, sort_order";
+
+    public Task<IReadOnlyList<Fence>> ListAsync(IUnitOfWork uow, CancellationToken ct = default) =>
+        SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence ORDER BY sort_order, id;", c => Sql.ListAsync(c, Map, ct));
+
+    public async Task<Fence?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default) =>
+        (await SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence WHERE id = $id;", c =>
+        {
+            c.Parameters.AddWithValue("$id", Sql.Id(id));
+            return Sql.ListAsync(c, Map, ct);
+        })).SingleOrDefault();
+
+    public Task UpsertAsync(IUnitOfWork uow, Fence fence, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(fence);
+        return SqliteUnitOfWork.From(uow).ExecuteAsync(
+            $"""
+            INSERT INTO fence ({Columns}) VALUES ($id, $t, $m, $x, $y, $w, $h, $dpi, $o, $s, $so)
+            ON CONFLICT (id) DO UPDATE SET title = excluded.title, monitor_id = excluded.monitor_id, x = excluded.x, y = excluded.y,
+                width = excluded.width, height = excluded.height, dpi = excluded.dpi, opacity = excluded.opacity, sort_order = excluded.sort_order;
+            """, ct,
+            ("$id", Sql.Id(fence.Id)), ("$t", fence.Title), ("$m", fence.MonitorId), ("$x", fence.X), ("$y", fence.Y),
+            ("$w", fence.Width), ("$h", fence.Height), ("$dpi", fence.Dpi), ("$o", fence.Opacity), ("$s", fence.IsStaging ? 1 : 0),
+            ("$so", fence.SortOrder));
+    }
+
+    private static Fence Map(SqliteDataReader r) =>
+        new(Sql.ParseId(r.GetString(0)), r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetInt32(4), r.GetInt32(5), r.GetInt32(6),
+            r.GetInt32(7), r.GetInt32(8), r.GetInt64(9) == 1) { SortOrder = r.GetInt32(10) };
+}

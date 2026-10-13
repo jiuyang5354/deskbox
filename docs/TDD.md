@@ -1,4 +1,4 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.7
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.8
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -37,14 +37,14 @@ flowchart TD
 - `IVaultRecordStore.AddAsync(uow, record)`、`ILostFileNoticeStore.AddAsync/GetUnacknowledgedAsync/SaveAsync(uow, …)`：同上。**Journal 与所有 Store 不得自行打开连接**，只在传入的工作单元上读写（Infrastructure 实现从 `IUnitOfWork` 取 `SqliteConnection` 与 `SqliteTransaction`）。`JournaledMove`、`JournalRecovery`、`LostFileNotices` 通过构造函数注入 `IUnitOfWorkFactory`。
 - `ISnapshotStore`：快照，保留 10 份。
 - `IMonitorService`：显示器指纹、DPI、拔插事件。
-- `IDesktopHost`：WorkerW 嵌入、`FWF_NOICONS` 系统图标显隐、`ExplorerRestarted` 事件。
+- `IDesktopWindowing` / `IShellNotifications` / `IBoxWindows` / `IFenceStore` / `IMonitorService`：桌面层嵌入与自愈（v1.0.8，见 4.5；取代原 `IDesktopHost`）。`FWF_NOICONS` 系统图标显隐不在任务 4 范围内，另行设计。
 - `IRuleEngine`：分类。
 
-测试要求：`IFileMover`、`IJournal`、`IDesktopHost` 提供故障注入测试实现（占用、磁盘满、Pending 阶段崩溃、Explorer 重启）。
+测试要求：`IFileMover`、`IJournal`、`IDesktopWindowing` 提供故障注入测试实现（占用、磁盘满、Pending 阶段崩溃、Explorer 重启）。
 
 ## 4. 关键机制
 - **桌面嵌入**：向 Progman 发 `0x052C` 生成 WorkerW，方框窗口 `SetParent` 到其下；`FWF_NOICONS` 隐藏系统图标，改由 DeskBox 绘制。
-- **Explorer 重启自愈**：每 5 秒巡检 Progman 句柄，变化即重新嵌入。
+- **Explorer 重启自愈**：监听 `TaskbarCreated` 广播（v1.0.8 起取代 5 秒巡检，见 4.5）。
 - **兜底（P0）**：托盘"临时显示系统桌面图标"；`SafeModePolicy`：连续 2 次启动后 30 秒内崩溃 → 安全模式。崩溃处理器先还原 Explorer 图标再写转储。
 - **文件移动原子性**：写 Journal(Pending) → 移动 → Commit(实际路径)；启动时先恢复 Journal，再嵌入桌面层，最后渲染。
 - **重命名跟踪**：按 `file_id` 查找记录更新 `file_path`；找不到则从方框移除。
@@ -144,6 +144,37 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - `Cancel` 只允许在 Classifying（尚未动文件）；Created / Snapshotting / Applying 均不可取消。
 - Applying 中致命错误：Applying →(Fail)→ RollingBack →(RolledBack)→ Failed。
 - 方框状态机（含 Deleted 终态）不变，已被 PM 接受。
+
+### 4.5 桌面层嵌入与 Explorer 重启自愈（v1.0.8，任务 4）
+#### 4.5.1 嵌入
+- `DesktopEmbedder`（Application）只依赖端口；所有 Win32 调用在 `Win32DesktopWindowing`（Infrastructure，`net8.0-windows`）中。**不注入 DLL、不装钩子**。
+- 一轮挂接 `AttachAllAsync`：
+  1. 丢弃上一轮所有句柄（`WorkerW = Zero`）；
+  2. 从数据库读方框（`IFenceStore.ListAsync`），读当前显示器；
+  3. `FindWindow("Progman")` → `SendMessageTimeout(Progman, 0x052C, …, 1s)` → 找 WorkerW（经典：持有 `SHELLDLL_DefView` 的顶层窗口之后的 `WorkerW`；Win11 24H2：`Progman` 的子 `WorkerW`）；
+  4. 对每个方框 `IBoxWindows.Ensure`（句柄已销毁则重建）→ `SetParent(box, WorkerW)` → 按 4.5.2 计算的屏幕物理像素 `SetBounds`（嵌入时换算到 WorkerW 客户区坐标）。
+- 同一时间只有一轮挂接（`SemaphoreSlim`）。
+
+#### 4.5.2 坐标、DPI 与显示器
+- 进程为 **Per-Monitor V2**（`app.manifest`，通知线程另设 `SetThreadDpiAwarenessContext`）；`IMonitorService` 返回物理像素的 `Bounds` / `WorkArea` 与 `GetDpiForMonitor(MDT_EFFECTIVE_DPI)`。
+- 数据库 `fence` 表（迁移 v2）存 **DIP（1/96 英寸）、相对所属显示器工作区左上角** 的 x / y / width / height + `monitor_id`；与显示器物理位置和缩放无关。`dpi` 列只记录最后保存时的 DPI，换算不使用。
+- 显示：`物理 = 工作区原点 + round(DIP × dpi / 96)`；保存：`DIP = round((物理 − 工作区原点) × 96 / dpi)`（均为 `MidpointRounding.AwayFromZero`）。DPI ≥ 96 时往返精确（误差 ≤ 0.5·96/dpi < 0.5）。保存时按方框中心所在显示器归属。
+- 所属显示器不在了：按主显示器工作区与 DPI 放置，再整体挪进主显示器工作区（先缩到不超过工作区，再平移），结果一定完全可见；**不回写数据库**，显示器接回后回到原位置。所有放置结果都会做同样的夹取。
+- 方框位置**只从数据库读取**，从不沿用重启前窗口的位置 / 大小。
+
+#### 4.5.3 Explorer 重启自愈与降级模式
+- `Win32ShellNotifications` 在专用 STA 线程上建隐藏的**顶层**窗口（`TaskbarCreated` 只广播给顶层窗口，`HWND_MESSAGE` 收不到），`RegisterWindowMessage("TaskbarCreated")` 并 `ChangeWindowMessageFilterEx` 放行；事件封送到 UI 线程。同一窗口转发 `WM_DISPLAYCHANGE` 作为 `MonitorsChanged`。
+- 收到 `TaskbarCreated`：执行一轮 `AttachAllAsync`（丢弃旧句柄、重新找 WorkerW、重建已随旧 WorkerW 销毁的方框窗口并挂到**新** WorkerW、位置从数据库读）。不再有 5 秒轮询。
+- **降级模式**：找不到 Progman、0x052C 后找不到 WorkerW、或 `SetParent` 失败时，不抛异常、不重试、不轮询：方框还原为普通顶层窗口并 `SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)` 置底，照常显示在数据库位置；`Mode = Degraded`。下一次 `TaskbarCreated` 时再尝试嵌入。事件处理中的异常通过 `AttachFailed` 上报（不抛回消息循环），并保持降级。
+- 单元测试（假 Win32，`FakeDesktop`）：无 Progman → 降级且 `FindProgman` 只调用一次；`TaskbarCreated` 后 → 嵌入；Explorer 重启后方框挂到新的 WorkerW、位置来自数据库；显示器移除（完全 / 一半在外 / 超大）后完全在主显示器工作区内；100/150/200% DPI 往返精确。
+
+#### 4.5.4 真实桌面测试与真机清单
+- `tests/DeskBox.Desktop.Tests`（`Category=WindowsIntegration`，仅 `windows-integration.yml` 手动触发）：真实窗口嵌入到 WorkerW；结束 explorer.exe 再启动，断言方框的父窗口是**新的** WorkerW，`finally` 中保证 explorer.exe 重新运行。
+- 没有交互式桌面（找不到 Progman / explorer.exe 未运行）时以 `Skip.If` **明确跳过**并写明原因，不静默通过。被跳过时须按真机清单验证：
+  1. 启动 DeskBox，方框位于桌面图标层之下的壁纸层，Win+D 后仍可见；
+  2. 任务管理器结束 explorer.exe 再运行：方框在数秒内回到原位置（数据库位置）；
+  3. 拔掉方框所在显示器：方框完整出现在主显示器工作区；接回后回到原显示器原位置；
+  4. 100% / 150% / 200% 缩放下拖动并重启 DeskBox，位置不漂移。
 
 ### 4.4 SQLite 持久化（v1.0.6，DeskBox.Infrastructure.Core）
 `DeskBox.Infrastructure.Core` 目标框架为 `net8.0`，不依赖 WPF，所以集成测试能在任何宿主上对真实 SQLite 文件运行。Windows 专用的部分用 `[SupportedOSPlatform("windows")]` 标注。

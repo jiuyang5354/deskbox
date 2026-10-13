@@ -146,6 +146,29 @@ public sealed class UnitOfWorkTests : IAsyncLifetime
     {
         var db = new SqliteUnitOfWorkFactory(Path.Combine(_t.Dir, "fresh.db"));
         (await SqliteSchema.MigrateAsync(db)).Should().Be(0);
+        (await SqliteSchema.MigrateAsync(db)).Should().Be(SqliteSchema.LatestVersion);
+    }
+}
+
+public sealed class SchemaV2Tests : IAsyncLifetime
+{
+    private readonly TempDb _t = new();
+    public Task InitializeAsync() => _t.InitializeAsync();
+    public Task DisposeAsync() => _t.DisposeAsync();
+
+    [Fact]
+    public async Task V1_database_upgrades_to_v2_and_gains_fence_table()
+    {
+        var db = new SqliteUnitOfWorkFactory(Path.Combine(_t.Dir, "v1.db"));
+        await db.InTransactionAsync(async u =>
+        {
+            var s = SqliteUnitOfWork.From(u);
+            await s.ExecuteAsync(SqliteSchema.Migrations[0], default);
+            await s.ExecuteAsync("PRAGMA user_version=1;", default);
+        });
         (await SqliteSchema.MigrateAsync(db)).Should().Be(1);
+        SqliteSchema.LatestVersion.Should().Be(2);
+        (await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).RunAsync("SELECT COUNT(*) FROM sqlite_master WHERE name='fence';", c => c.ExecuteScalarAsync())))
+            .Should().Be(1L);
     }
 }

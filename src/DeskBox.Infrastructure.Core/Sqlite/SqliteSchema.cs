@@ -71,6 +71,22 @@ public static class SqliteSchema
             PRIMARY KEY (snapshot_id, ordinal)
         );
         """,
+        // v2（TDD v1.0.8 §4.5.2）：方框。位置为 DIP、相对所属显示器工作区左上角，与显示器位置 / 缩放无关
+        """
+        CREATE TABLE fence (
+            id         TEXT    NOT NULL PRIMARY KEY,                  -- 方框 ID（GUID）
+            title      TEXT    NOT NULL,
+            monitor_id TEXT    NOT NULL,                              -- 所属显示器指纹
+            x          INTEGER NOT NULL,                              -- DIP，相对工作区左上角
+            y          INTEGER NOT NULL,
+            width      INTEGER NOT NULL CHECK (width  >= 120),        -- DIP
+            height     INTEGER NOT NULL CHECK (height >= 120),
+            dpi        INTEGER NOT NULL,                              -- 最后保存时所在显示器 DPI（仅记录）
+            opacity    INTEGER NOT NULL,
+            is_staging INTEGER NOT NULL CHECK (is_staging IN (0, 1)),
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        """,
     ];
 
     public static int LatestVersion => Migrations.Length;
