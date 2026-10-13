@@ -62,7 +62,7 @@ public partial class App : System.Windows.Application
             var desktop = FileMoverFactory.CreateDesktopEnumerator();
             if (desktop is IDisposable d) Own(d);
 
-            var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath),
+            var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath, new TraceMigrationLog()),
                 new StagingFenceSelfCheck(db, fenceStore, monitors, new TraceStagingLog()), recovery, desktop, embedder,
                 new MessageBoxNotifier(), Mode);
             var result = await sequence.RunAsync();
@@ -105,6 +105,12 @@ public partial class App : System.Windows.Application
         public void ReadOnlyMode(string reason) =>
             MessageBox.Show($"{reason}。DeskBox 已进入只读模式：方框照常显示，但不会移动任何文件。请重启 DeskBox 再试。",
                 "DeskBox", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private sealed class TraceMigrationLog : SqliteSchema.IMigrationLog
+    {
+        public void StagingFenceDemoted(Guid fenceId, Guid keptStagingFenceId) =>
+            Trace.TraceWarning("StagingFenceDemoted: 迁移 v4 把重复的暂存方框 {0} 降为普通方框（保留 {1}）", fenceId, keptStagingFenceId);
     }
 
     private sealed class TraceStagingLog : IStagingSelfCheckLog

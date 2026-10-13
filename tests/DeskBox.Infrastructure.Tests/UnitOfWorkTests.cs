@@ -218,7 +218,9 @@ public sealed class SchemaV2Tests : IAsyncLifetime
     public async Task V4_adds_partial_unique_index_allowing_one_staging_and_many_normal()
     {
         var db = await V3Async(_t.Dir, ("00000000-0000-0000-0000-000000000001", 0, 1), ("00000000-0000-0000-0000-000000000002", 1, 0));
-        (await SqliteSchema.MigrateAsync(db)).Should().Be(3);
+        var log = new MigrationLog();
+        (await SqliteSchema.MigrateAsync(db, log)).Should().Be(3);
+        log.Entries.Should().BeEmpty("只有一个暂存方框，不降级");
         (await Count(db, "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='ux_fence_single_staging';")).Should().Be(1);
         await FluentActions.Awaiting(() => db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
             "INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging) VALUES ('x','t','m',0,0,200,200,96,80,1);", default)))
@@ -237,7 +239,13 @@ public sealed class SchemaV2Tests : IAsyncLifetime
             ("00000000-0000-0000-0000-00000000000c", 1, 1));
         await db.InTransactionAsync(u => SqliteUnitOfWork.From(u).ExecuteAsync(
             "INSERT INTO fence_item (id,fence_id,file_path,file_id) VALUES ('i','00000000-0000-0000-0000-00000000000b','C:\\d\\x','1A2B3C4D:000000000000000000000000000000AA');", default));
-        await SqliteSchema.MigrateAsync(db);
+        var log = new MigrationLog();
+        await SqliteSchema.MigrateAsync(db, log);
+        log.Entries.Should().BeEquivalentTo(new[]
+        {
+            (Guid.Parse("00000000-0000-0000-0000-00000000000c"), Guid.Parse("00000000-0000-0000-0000-00000000000a")),
+            (Guid.Parse("00000000-0000-0000-0000-00000000000b"), Guid.Parse("00000000-0000-0000-0000-00000000000a")),
+        }, o => o.WithStrictOrdering(), "每个被降级的暂存方框一条，带方框 ID");
         (await Count(db, "SELECT COUNT(*) FROM fence;")).Should().Be(3, "不删方框");
         (await Count(db, "SELECT COUNT(*) FROM fence_item;")).Should().Be(1, "不删映射");
         (await db.InTransactionAsync(async u => (string)(await SqliteUnitOfWork.From(u).RunAsync(
@@ -251,5 +259,29 @@ public sealed class SchemaV2Tests : IAsyncLifetime
         var db = await V3Async(_t.Dir, ("00000000-0000-0000-0000-000000000001", 0, 0));
         await SqliteSchema.MigrateAsync(db);
         (await Count(db, "SELECT COUNT(*) FROM fence WHERE is_staging = 1;")).Should().Be(0, "补建由启动自检负责，迁移不建");
+    }
+
+    private sealed class MigrationLog : SqliteSchema.IMigrationLog
+    {
+        public List<(Guid Fence, Guid Kept)> Entries { get; } = [];
+        public void StagingFenceDemoted(Guid fenceId, Guid keptStagingFenceId) => Entries.Add((fenceId, keptStagingFenceId));
+    }
+
+    [Fact]
+    public async Task Bootstrapper_passes_migration_log_through()
+    {
+        var path = Path.Combine(_t.Dir, "boot.db");
+        var db = new SqliteUnitOfWorkFactory(path);
+        await db.InTransactionAsync(async u =>
+        {
+            var s = SqliteUnitOfWork.From(u);
+            for (var i = 0; i < 3; i++) await s.ExecuteAsync(SqliteSchema.Migrations[i], default);
+            await s.ExecuteAsync("PRAGMA user_version=3;", default);
+            await s.ExecuteAsync("INSERT INTO fence (id,title,monitor_id,x,y,width,height,dpi,opacity,is_staging,sort_order) VALUES " +
+                "('00000000-0000-0000-0000-000000000001','t','m',0,0,200,200,96,80,1,0),('00000000-0000-0000-0000-000000000002','t','m',0,0,200,200,96,80,1,1);", default);
+        });
+        var log = new MigrationLog();
+        await new SqliteDatabaseBootstrapper(db, path, log).MigrateAsync();
+        log.Entries.Select(e => e.Fence).Should().Equal(Guid.Parse("00000000-0000-0000-0000-000000000002"));
     }
 }

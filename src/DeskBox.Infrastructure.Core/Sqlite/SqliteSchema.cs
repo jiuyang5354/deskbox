@@ -116,7 +116,15 @@ public static class SqliteSchema
     public static int LatestVersion => Migrations.Length;
 
     /// <summary>把数据库升级到最新版本，返回升级前的版本。</summary>
-    public static async Task<int> MigrateAsync(IUnitOfWorkFactory db, CancellationToken ct = default)
+    /// <summary>v4 迁移把 <paramref name="fenceId"/> 从暂存方框降为普通方框（旧库有多个暂存方框时，每个被降级的记一条）。</summary>
+    public interface IMigrationLog
+    {
+        void StagingFenceDemoted(Guid fenceId, Guid keptStagingFenceId);
+    }
+
+    public static Task<int> MigrateAsync(IUnitOfWorkFactory db, CancellationToken ct = default) => MigrateAsync(db, null, ct);
+
+    public static async Task<int> MigrateAsync(IUnitOfWorkFactory db, IMigrationLog? log, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(db);
         var before = -1;
@@ -133,10 +141,19 @@ public static class SqliteSchema
                 if (version > LatestVersion)
                     throw new InvalidOperationException($"数据库版本 {version} 高于程序支持的 {LatestVersion}");
                 if (version == LatestVersion) return before;
+                // v4 降级前先在同一事务里读出将被降级的暂存方框，提交成功后再逐条记日志
+                var demoted = version == 3 ? await StagingDuplicatesAsync(s, ct) : [];
                 await s.ExecuteAsync(Migrations[version], ct);
                 await s.ExecuteAsync($"PRAGMA user_version={version + 1};", ct);
                 await uow.CommitAsync(ct);
+                foreach (var (id, kept) in demoted) log?.StagingFenceDemoted(id, kept);
             }
         }
+    }
+
+    private static async Task<IReadOnlyList<(Guid Id, Guid Kept)>> StagingDuplicatesAsync(SqliteUnitOfWork s, CancellationToken ct)
+    {
+        var ids = await s.RunAsync("SELECT id FROM fence WHERE is_staging = 1 ORDER BY sort_order, id;", c => Sql.ListAsync(c, r => Sql.ParseId(r.GetString(0)), ct));
+        return ids.Skip(1).Select(id => (id, ids[0])).ToList();
     }
 }
