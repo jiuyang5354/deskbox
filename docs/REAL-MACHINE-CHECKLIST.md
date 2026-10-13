@@ -4,6 +4,12 @@
 数据库与日志：`%LOCALAPPDATA%\DeskBox`；收纳库：`%USERPROFILE%\DeskBox\Vault`。
 
 ## A. 启动与单实例
+**先拿到预览版程序（不用装开发环境）：**
+1. 打开仓库的 Actions 页面，选 CI 里 main 分支最新一次绿色的运行，拉到页面底部「Artifacts」，下载 `DeskBox-preview-<提交号>-win-x64`（下载下来是一个 zip，提交号就是这次构建对应的 main 提交，保留 30 天）。
+2. 把这个 zip 解压一次到任意文件夹，双击里面的 `DeskBox.App.exe` 运行。程序自带运行环境，不用另装 .NET。
+3. 这个程序没有签名，第一次运行会弹出蓝色的「Windows 已保护你的电脑」。点「更多信息」，再点「仍要运行」即可，这不是程序坏了。
+4. 预览版和以后的正式版用同一个数据目录：数据库和日志在 `%LOCALAPPDATA%\DeskBox`，收纳库在 `%USERPROFILE%\DeskBox\Vault`。数据库迁移只往前走，所以测完以后装正式版不会冲突；但不能降级，**不要用旧的 zip 打开新库**。
+
 - [ ] A1 首次启动：自动建 `%LOCALAPPDATA%\DeskBox\deskbox.db` 和 `%USERPROFILE%\DeskBox\Vault`，无报错。
 - [ ] A2 连续双击启动两次：只留一个实例，任务管理器里只有一个 DeskBox 进程，第二次不报错退出。
 - [ ] A3 关闭后再启动：方框位置、大小与关闭前一致。
