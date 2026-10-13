@@ -12,4 +12,5 @@
   <data name="ReadOnly" xml:space="preserve"><value>文件所在磁盘处于写保护状态</value></data>
   <data name="NameConflict" xml:space="preserve"><value>同名文件过多，无法自动改名</value></data>
   <data name="IoError" xml:space="preserve"><value>未知错误，详见日志</value></data>
+  <data name="LostFilesNotice" xml:space="preserve"><value>有 {0} 个文件在上次整理中断后没能找回：{1}。它可能已被移动或删除，你可以在收纳库和桌面上搜索这个文件名。</value></data>
 </root>

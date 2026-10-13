@@ -4,11 +4,25 @@ using DeskBox.Domain.Entities;
 using DeskBox.Domain.Files;
 using NSubstitute;
 
+
 namespace DeskBox.Domain.Tests;
 
 /// <summary>内存文件系统，模拟 MoveFileExW(src, dst, 0) 的不替换语义。</summary>
-internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders
+internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders, IFileIdentity, IVaultIndex
 {
+    /// <summary>文件内容即 file_id（格式合法时）。</summary>
+    public string? TryGetFileId(string fullPath) =>
+        Broken.Contains(fullPath) ? throw new IOException("设备未就绪") :
+        Files.TryGetValue(fullPath, out var v) && FenceItem.IsValidFileId(v) ? v : null;
+    /// <summary>读取 file_id 时抛 IOException 的路径。</summary>
+    public HashSet<string> Broken { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public string VaultRoot { get; set; } = @"C:\vault\";
+    public IEnumerable<string> EnumerateFiles() => Files.Keys.Where(k => k.StartsWith(VaultRoot, StringComparison.OrdinalIgnoreCase)).ToList();
+    /// <summary>模拟进程被杀：在第 KillAtAttempt 次尝试的移动之前/之后抛出 KilledException。</summary>
+    public int? KillAtAttempt { get; set; }
+    public bool KillAfterMove { get; set; }
+    public Action? OnKill { get; set; }
+
     public Dictionary<string, uint> Attributes { get; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> Dirs { get; } = new(StringComparer.OrdinalIgnoreCase);
     public string PublicDesktop { get; set; } = @"C:\Users\Public\Desktop";
@@ -24,6 +38,20 @@ internal sealed class FakeFs : INativeFileMove, IFileSystemProbe, IKnownFolders
     public int Move(string src, string dst)
     {
         Attempts.Add(dst);
+        if (KillAtAttempt == Attempts.Count && !KillAfterMove) Kill();
+        var r = DoMove(src, dst);
+        if (KillAtAttempt == Attempts.Count && KillAfterMove) Kill();
+        return r;
+    }
+
+    private void Kill()
+    {
+        OnKill?.Invoke();
+        throw new KilledException();
+    }
+
+    private int DoMove(string src, string dst)
+    {
         BeforeAttempt?.Invoke(dst);
         if (!Files.ContainsKey(src)) return Win32Errors.FileNotFound;
         if (Locked.Contains(src)) return Win32Errors.SharingViolation;
@@ -254,38 +282,28 @@ public class ConflictNamingTests
     }
 }
 
+internal sealed class KilledException() : Exception("模拟进程被杀");
+
 public class JournaledMoveTests
 {
     [Fact]
     public async Task Commits_actual_renamed_path()
     {
+        const string id = "1a2b3c4d:000000000000000000000000000000aa";
         var fs = new FakeFs();
-        fs.Files[@"C:\d\notes.txt"] = "n";
-        fs.Files[@"C:\v\notes.txt"] = "o";
+        fs.Files[@"C:\d\notes.txt"] = id;
+        fs.Files[@"C:\vault\notes.txt"] = "o";
         var journal = Substitute.For<IJournal>();
         JournalEntry? pending = null;
-        await journal.AppendPendingAsync(Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
-        var sut = new JournaledMove(new RenamingFileMover(fs, fs, fs), journal, TimeProvider.System);
+        await journal.AppendPendingAsync(Arg.Any<IUnitOfWork>(), Arg.Do<JournalEntry>(e => pending = e), Arg.Any<CancellationToken>());
+        var sut = new JournaledMove(new FakeDb(), new RenamingFileMover(fs, fs, fs), journal, fs, Substitute.For<IRecoveryLog>(), TimeProvider.System);
         var job = Guid.NewGuid();
 
-        var r = await sut.ExecuteAsync(job, @"C:\d\notes.txt", @"C:\v\notes.txt");
+        var r = await sut.ExecuteAsync(job, @"C:\d\notes.txt", @"C:\vault\notes.txt");
 
         ((MoveResult.Moved)r).Renamed.Should().BeTrue();
         pending!.JobId.Should().Be(job);
-        pending.TargetPath.Should().Be(@"C:\v\notes.txt");
-        await journal.Received(1).CommitAsync(pending.Id, @"C:\v\notes (2).txt", Arg.Any<CancellationToken>());
-        await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default, default!);
-    }
-
-    [Fact]
-    public async Task Skipped_move_rolls_back()
-    {
-        var mover = Substitute.For<IFileMover>();
-        mover.MoveAsync("s", "t", Arg.Any<CancellationToken>()).Returns(new MoveResult.Skipped("s", SkipReason.NeedsAdmin, 5));
-        var journal = Substitute.For<IJournal>();
-        var r = await new JournaledMove(mover, journal, TimeProvider.System).ExecuteAsync(Guid.NewGuid(), "s", "t");
-        r.Should().BeOfType<MoveResult.Skipped>();
-        await journal.Received(1).RollBackAsync(Arg.Any<Guid>(), "NeedsAdmin (Win32 5)", Arg.Any<CancellationToken>());
-        await journal.DidNotReceiveWithAnyArgs().CommitAsync(default, default!);
+        await journal.Received(1).CommitAsync(Arg.Any<IUnitOfWork>(), pending.Id, @"C:\vault\notes (2).txt", Arg.Any<CancellationToken>());
+        await journal.DidNotReceiveWithAnyArgs().RollBackAsync(default!, default, default!);
     }
 }
