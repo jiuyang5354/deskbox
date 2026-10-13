@@ -86,8 +86,9 @@ public class OrganizeJobStateMachineTests
         [OrganizeJobState.Applying] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.SnapshotSaved, OrganizeJobTrigger.Classified],
         [OrganizeJobState.Completed] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.SnapshotSaved, OrganizeJobTrigger.Classified, OrganizeJobTrigger.AllApplied],
         [OrganizeJobState.PartiallyCompleted] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.SnapshotSaved, OrganizeJobTrigger.Classified, OrganizeJobTrigger.SomeSkipped],
+        [OrganizeJobState.RollingBack] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.SnapshotSaved, OrganizeJobTrigger.Classified, OrganizeJobTrigger.Fail],
         [OrganizeJobState.Failed] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.Fail],
-        [OrganizeJobState.Cancelled] = [OrganizeJobTrigger.Cancel],
+        [OrganizeJobState.Cancelled] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.SnapshotSaved, OrganizeJobTrigger.Cancel],
         [OrganizeJobState.Restored] = [OrganizeJobTrigger.Start, OrganizeJobTrigger.SnapshotSaved, OrganizeJobTrigger.Classified, OrganizeJobTrigger.AllApplied, OrganizeJobTrigger.Restore],
     };
 
@@ -122,6 +123,25 @@ public class OrganizeJobStateMachineTests
     [InlineData(OrganizeJobState.Completed, false)]
     [InlineData(OrganizeJobState.Applying, false)]
     public void Terminal_states(OrganizeJobState s, bool terminal) => At(s).IsTerminal.Should().Be(terminal);
+
+    [Fact]
+    public void Cancel_only_from_classifying()
+    {
+        OrganizeJobStateMachine.Table.Where(kv => kv.Key.Item2 == OrganizeJobTrigger.Cancel)
+            .Select(kv => kv.Key.Item1).Should().Equal(OrganizeJobState.Classifying);
+        At(OrganizeJobState.Applying).CanFire(OrganizeJobTrigger.Cancel).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Fatal_error_while_applying_rolls_back_then_fails()
+    {
+        var m = At(OrganizeJobState.Applying);
+        m.Fire(OrganizeJobTrigger.Fail).Should().Be(OrganizeJobState.RollingBack);
+        m.IsTerminal.Should().BeFalse();
+        FluentActions.Invoking(() => m.Fire(OrganizeJobTrigger.Cancel)).Should().Throw<InvalidTransitionException>();
+        m.Fire(OrganizeJobTrigger.RolledBack).Should().Be(OrganizeJobState.Failed);
+        m.IsTerminal.Should().BeTrue();
+    }
 
     [Fact]
     public void Cannot_apply_before_snapshot()

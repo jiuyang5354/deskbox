@@ -27,7 +27,7 @@ public interface IFileIdentity
     string? TryGetFileId(string fullPath);
 }
 
-/// <summary>安全移动文件：不覆盖、不跨分区；失败返回 Skipped 而非抛异常。</summary>
+/// <summary>安全移动文件：不覆盖、不跨分区；重名自动改名；失败返回 Skipped 而非抛异常。</summary>
 public interface IFileMover
 {
     Task<MoveResult> MoveAsync(string sourcePath, string targetPath, CancellationToken ct = default);
@@ -37,7 +37,7 @@ public interface IFileMover
 public interface IJournal
 {
     Task AppendPendingAsync(JournalEntry entry, CancellationToken ct = default);
-    Task CommitAsync(Guid entryId, CancellationToken ct = default);
+    Task CommitAsync(Guid entryId, string actualTargetPath, CancellationToken ct = default);
     Task RollBackAsync(Guid entryId, CancellationToken ct = default);
     Task<IReadOnlyList<JournalEntry>> GetPendingAsync(CancellationToken ct = default);
 }

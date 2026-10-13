@@ -11,6 +11,7 @@ public class MoveResultTests
         MoveResult moved = new MoveResult.Moved("a", "b");
         MoveResult skipped = new MoveResult.Skipped("a", SkipReason.Locked);
         moved.Match(m => m.TargetPath, _ => "x").Should().Be("b");
+        ((MoveResult.Moved)moved).Renamed.Should().BeFalse();
         skipped.Match(_ => "x", s => s.Reason.ToString()).Should().Be("Locked");
         moved.SourcePath.Should().Be("a");
     }
@@ -22,6 +23,8 @@ public class MoveResultTests
     [InlineData(SkipReason.CloudOnly, "云端")]
     [InlineData(SkipReason.NeedsAdmin, "管理员")]
     [InlineData(SkipReason.NotFound, "不存在")]
+    [InlineData(SkipReason.NameConflict, "重名")]
+    [InlineData(SkipReason.IoError, "磁盘")]
     public void Skip_messages(SkipReason r, string fragment) =>
         new MoveResult.Skipped("a", r).Message.Should().Contain(fragment);
 

@@ -224,8 +224,12 @@ public class JournalEntryTests
     {
         var e = Make();
         e.Status.Should().Be(JournalStatus.Pending);
-        e.Commit();
+        e.ActualTargetPath.Should().BeNull();
+        FluentActions.Invoking(() => e.Commit(" ")).Should().Throw<DomainValidationException>();
+        e.Status.Should().Be(JournalStatus.Pending);
+        e.Commit("t (2)");
         e.Status.Should().Be(JournalStatus.Committed);
+        e.ActualTargetPath.Should().Be("t (2)");
         FluentActions.Invoking(e.RollBack).Should().Throw<InvalidTransitionException>().Which.From.Should().Be("Committed");
     }
 
@@ -235,7 +239,7 @@ public class JournalEntryTests
         var e = Make();
         e.RollBack();
         e.Status.Should().Be(JournalStatus.RolledBack);
-        FluentActions.Invoking(e.Commit).Should().Throw<InvalidTransitionException>().Which.Trigger.Should().Be("Commit");
+        FluentActions.Invoking(() => e.Commit("x")).Should().Throw<InvalidTransitionException>().Which.Trigger.Should().Be("Commit");
     }
 
     [Fact]

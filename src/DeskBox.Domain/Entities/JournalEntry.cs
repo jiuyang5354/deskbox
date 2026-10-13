@@ -9,6 +9,8 @@ public sealed class JournalEntry
     public Guid JobId { get; }
     public string SourcePath { get; }
     public string TargetPath { get; }
+    /// <summary>实际落盘路径（自动改名后可能与 TargetPath 不同），Commit 时写入。</summary>
+    public string? ActualTargetPath { get; private set; }
     public JournalStatus Status { get; private set; }
     public DateTimeOffset CreatedAt { get; }
 
@@ -22,7 +24,13 @@ public sealed class JournalEntry
         Status = JournalStatus.Pending;
     }
 
-    public void Commit() => Transition(JournalStatus.Committed, "Commit");
+    public void Commit(string actualTargetPath)
+    {
+        if (string.IsNullOrWhiteSpace(actualTargetPath))
+            throw new DomainValidationException(nameof(ActualTargetPath), "不能为空");
+        Transition(JournalStatus.Committed, "Commit");
+        ActualTargetPath = actualTargetPath;
+    }
     public void RollBack() => Transition(JournalStatus.RolledBack, "RollBack");
 
     private void Transition(JournalStatus to, string trigger)

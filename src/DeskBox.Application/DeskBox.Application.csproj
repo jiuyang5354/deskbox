@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="DeskBox.Domain.Tests" /></ItemGroup>
   <ItemGroup><ProjectReference Include="..\DeskBox.Domain\DeskBox.Domain.csproj" /></ItemGroup>
 </Project>
