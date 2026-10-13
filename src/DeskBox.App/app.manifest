@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="DeskBox.App" />
+  <assemblyIdentity version="1.0.0.0" name="DeskBox" />
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <!-- TDD §4.5.2：Per-Monitor V2，坐标全部为物理像素，跨显示器拖动时按目标显示器 DPI 缩放 -->

@@ -17,18 +17,26 @@ public sealed class NamedMutexSingleInstance : ISingleInstance, IDisposable
     private EventWaitHandle? _signal;
     private RegisteredWaitHandle? _wait;
 
+    /// <summary>锁名前缀：写死的常量，与程序集名 / exe 文件名无关（改名为 DeskBox.exe 不影响单实例）。</summary>
+    public const string NamePrefix = "DeskBox";
+
     public NamedMutexSingleInstance(SynchronizationContext? context, string? name = null)
     {
         _context = context;
-        _name = name ?? "DeskBox." + (WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName);
+        _name = name ?? DefaultName(WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName);
     }
+
+    /// <summary>按用户命名：<c>DeskBox.&lt;SID&gt;</c>，实际对象为 <c>Local\DeskBox.&lt;SID&gt;.mutex</c> / <c>.activate</c>。</summary>
+    public static string DefaultName(string userKey) => NamePrefix + "." + userKey;
+
+    public string MutexName => @"Local\" + _name + ".mutex";
 
     public event EventHandler? Activated;
 
     public bool TryAcquire()
     {
         ObjectDisposedException.ThrowIf(_mutex is null && _signal is not null, this);
-        var mutex = new Mutex(initiallyOwned: true, @"Local\" + _name + ".mutex", out var created);
+        var mutex = new Mutex(initiallyOwned: true, MutexName, out var created);
         if (!created)
         {
             mutex.Dispose();
