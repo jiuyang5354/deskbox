@@ -73,10 +73,11 @@ public interface IJournal
 /// <summary>整理快照存储（保留最近 10 份）。</summary>
 public interface ISnapshotStore
 {
-    Task SaveAsync(Snapshot snapshot, CancellationToken ct = default);
-    Task<Snapshot?> GetAsync(Guid id, CancellationToken ct = default);
-    Task<IReadOnlyList<Snapshot>> ListAsync(CancellationToken ct = default);
-    Task DeleteAsync(Guid id, CancellationToken ct = default);
+    Task SaveAsync(IUnitOfWork uow, Snapshot snapshot, CancellationToken ct = default);
+    Task<Snapshot?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
+    /// <summary>按创建时间倒序。</summary>
+    Task<IReadOnlyList<Snapshot>> ListAsync(IUnitOfWork uow, CancellationToken ct = default);
+    Task DeleteAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
 }
 
 public sealed record MonitorInfo(string Fingerprint, int Left, int Top, int Width, int Height, int Dpi, bool IsPrimary);

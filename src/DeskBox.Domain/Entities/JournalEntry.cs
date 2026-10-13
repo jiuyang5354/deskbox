@@ -45,6 +45,29 @@ public sealed class JournalEntry
         Status = JournalStatus.Pending;
     }
 
+    /// <summary>
+    /// 从持久化存储重建（仅供仓储使用）。校验与构造函数相同，并要求状态与字段一致：
+    /// Committed 必须有实际路径，RolledBack 必须有中止原因，计数不能为负。
+    /// </summary>
+    public static JournalEntry Restore(Guid id, Guid jobId, string fileId, string sourcePath, string targetPath,
+        DateTimeOffset createdAt, int attempt, JournalStatus status, string? actualTargetPath, string? abortReason, int recoveryFailures)
+    {
+        var e = new JournalEntry(id, jobId, fileId, sourcePath, targetPath, createdAt);
+        if (attempt < 0) throw new DomainValidationException(nameof(Attempt), "不能为负");
+        if (recoveryFailures < 0) throw new DomainValidationException(nameof(RecoveryFailures), "不能为负");
+        if (!Enum.IsDefined(status)) throw new DomainValidationException(nameof(Status), "未知状态");
+        if (status == JournalStatus.Committed && string.IsNullOrWhiteSpace(actualTargetPath))
+            throw new DomainValidationException(nameof(ActualTargetPath), "Committed 必须有实际路径");
+        if (status == JournalStatus.RolledBack && string.IsNullOrWhiteSpace(abortReason))
+            throw new DomainValidationException(nameof(AbortReason), "RolledBack 必须有中止原因");
+        e.Attempt = attempt;
+        e.RecoveryFailures = recoveryFailures;
+        e.Status = status;
+        e.ActualTargetPath = status == JournalStatus.Committed ? actualTargetPath : null;
+        e.AbortReason = status == JournalStatus.RolledBack ? abortReason : null;
+        return e;
+    }
+
     /// <summary>记录即将尝试的候选目标（仅 Pending 状态）。</summary>
     public void BeginAttempt(string candidatePath)
     {

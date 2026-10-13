@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 不依赖 WPF 的基础设施（SQLite 持久化、收纳库索引、file_id 读取），以 net8.0 构建以便在任何宿主上跑集成测试 -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DeskBox.Application\DeskBox.Application.csproj" />
+    <InternalsVisibleTo Include="DeskBox.Infrastructure.Tests" />
+  </ItemGroup>
+</Project>
