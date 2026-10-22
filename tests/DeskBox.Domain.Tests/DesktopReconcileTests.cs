@@ -33,7 +33,7 @@ public sealed class DesktopReconcileTests
         public List<string> Lines { get; } = [];
         public void DesktopScanSkipped(string reason) => Lines.Add("skipped:" + reason);
         public void DesktopScanStarted() => Lines.Add("started");
-        public void DesktopScanCompleted(int found, int written, int pruned, bool skipped) => Lines.Add($"completed found={found} written={written} pruned={pruned} skipped={skipped}");
+        public void DesktopScanCompleted(int found, int written, int pruned, bool skipped, int invalid) => Lines.Add($"completed found={found} written={written} pruned={pruned} skipped={skipped} skippedInvalid={invalid}");
         public void FenceItemPruned(string fileName) => Lines.Add("pruned:" + fileName);
         public void DesktopScanPruneSkipped(string reason) => Lines.Add("pruneSkipped:" + reason);
         public void StagingFenceMissing() => Lines.Add("stagingMissing");
@@ -99,7 +99,7 @@ public sealed class DesktopReconcileTests
         StagingNames().Should().Equal("A.lnk", "b.txt", "c.url", "工作资料");
         _items.Rows.Values.Select(i => i.SortOrder).Order().Should().Equal(0, 1, 2, 3);
         _items.Rows.Values.Single(i => i.FilePath.EndsWith("c.url")).IsPublicDesktop.Should().BeTrue("公共桌面只记归属");
-        _log.Lines.Should().ContainSingle(l => l.StartsWith("completed")).Which.Should().Be("completed found=4 written=4 pruned=0 skipped=False");
+        _log.Lines.Should().ContainSingle(l => l.StartsWith("completed")).Which.Should().Be("completed found=4 written=4 pruned=0 skipped=False skippedInvalid=0");
         _tray.Notices.Should().Equal("已收纳 4 个桌面文件");
         _db.Commits.Should().Be(1, "一个事务");
     }
@@ -136,7 +136,7 @@ public sealed class DesktopReconcileTests
         r!.Written.Should().Be(0);
         _items.Rows.Should().HaveCount(2);
         _tray.Notices.Should().BeEmpty("写入 0 行不提示");
-        _log.Lines.Last().Should().Be("completed found=2 written=0 pruned=0 skipped=False");
+        _log.Lines.Last().Should().Be("completed found=2 written=0 pruned=0 skipped=False skippedInvalid=0");
     }
 
     // 5
@@ -167,7 +167,7 @@ public sealed class DesktopReconcileTests
         r!.Pruned.Should().Be(2);
         _items.Rows.Values.Select(i => i.FilePath).Should().Equal(User + @"\kept.txt");
         _log.Lines.Where(l => l.StartsWith("pruned:")).Should().BeEquivalentTo("pruned:gone.txt", "pruned:gone2.lnk");
-        _log.Lines.Last().Should().Be("completed found=1 written=1 pruned=2 skipped=False");
+        _log.Lines.Last().Should().Be("completed found=1 written=1 pruned=2 skipped=False skippedInvalid=0");
     }
 
     // 7 / 8：一个桌面读失败、另一个成功 → 一行不删，并写明是哪个桌面
@@ -339,8 +339,9 @@ public sealed class DesktopReconcileTests
 
         var r = await Sut().RunAsync();
 
-        (r!.Written, r.Pruned).Should().Be((0, 0));
+        (r!.Written, r.Pruned, r.SkippedInvalid).Should().Be((0, 0, 2));
         _items.Rows.Keys.Should().Equal(keep.Id);
+        _log.Lines.Last().Should().EndWith("skippedInvalid=2");
     }
 
     [Fact]

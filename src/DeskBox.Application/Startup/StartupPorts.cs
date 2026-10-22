@@ -52,8 +52,8 @@ public interface IDesktopScanLog
 
     void DesktopScanStarted();
 
-    /// <summary>对账结束（TDD v1.0.14 §4.5.5 第 9 条）：fenceItemRowsWritten 是真实写入的行数。</summary>
-    void DesktopScanCompleted(int found, int fenceItemRowsWritten, int pruned, bool pruneSkipped);
+    /// <summary>对账结束（TDD v1.0.14 §4.5.5 第 9 条）：fenceItemRowsWritten 是真实写入的行数；skippedInvalid 是 file_id 无效、未收也不删的项数。</summary>
+    void DesktopScanCompleted(int found, int fenceItemRowsWritten, int pruned, bool pruneSkipped, int skippedInvalid);
 
     /// <summary>删掉一条磁盘上已不存在的归属行；只记文件名。</summary>
     void FenceItemPruned(string fileName);

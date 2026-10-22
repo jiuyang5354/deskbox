@@ -6,7 +6,7 @@ using DeskBox.Domain.Files;
 namespace DeskBox.Application.Files;
 
 /// <summary>一次扫描的结果。Present 是磁盘上确实存在的全部路径（含 file_id 无效、不能收的项），用于判断哪些归属行该删。</summary>
-public sealed record DesktopScan(IReadOnlyList<DesktopItem> Items, IReadOnlySet<string> Present, IReadOnlyList<string> Failures)
+public sealed record DesktopScan(IReadOnlyList<DesktopItem> Items, IReadOnlySet<string> Present, IReadOnlyList<string> Failures, int SkippedInvalid = 0)
 {
     /// <summary>用户桌面和公共桌面都读取成功、中途没出错。</summary>
     public bool Complete => Failures.Count == 0;
@@ -27,6 +27,7 @@ public sealed class DesktopScanner(IKnownFolders folders, IDirectoryLister liste
         var items = new List<DesktopItem>();
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var failures = new List<string>();
+        var skippedInvalid = 0;
         foreach (var (name, dir, isPublic) in new[] { (UserDesktopName, folders.UserDesktop, false), (PublicDesktopName, folders.PublicDesktop, true) })
         {
             ct.ThrowIfCancellationRequested();
@@ -56,14 +57,16 @@ public sealed class DesktopScanner(IKnownFolders folders, IDirectoryLister liste
                 if (!present.Add(i.FullPath)) continue; // 同一完整路径只收一份
                 if (FenceItem.IsValidFileId(i.FileId))
                     items.Add(new DesktopItem(i.FullPath, i.FileId.ToUpperInvariant(), i.IsDirectory, isPublic, i.LastWriteTime));
+                else
+                    skippedInvalid++; // file_id 无效：不收，但仍算磁盘上存在、不删
             }
         }
-        return new DesktopScan(items, present, failures);
+        return new DesktopScan(items, present, failures, skippedInvalid);
     }
 }
 
 /// <summary>对账结果。StagingMissing 时什么都没写。</summary>
-public sealed record ReconcileResult(int Found, int Written, int Pruned, bool PruneSkipped, bool StagingMissing = false);
+public sealed record ReconcileResult(int Found, int Written, int Pruned, bool PruneSkipped, bool StagingMissing = false, int SkippedInvalid = 0);
 
 /// <summary>
 /// 启动对账写库（TDD v1.0.14 §4.5.5 第 3–8 条），一个 BEGIN IMMEDIATE 事务：
@@ -82,7 +85,7 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
         var outcome = await db.InTransactionAsync(async u =>
         {
             var staging = (await fences.ListAsync(u, ct)).FirstOrDefault(f => f.IsStaging);
-            if (staging is null) return new ReconcileResult(scan.Present.Count, 0, 0, false, StagingMissing: true);
+            if (staging is null) return new ReconcileResult(scan.Present.Count, 0, 0, false, StagingMissing: true, scan.SkippedInvalid);
 
             var all = await items.ListAllAsync(u, ct);
             var known = new HashSet<string>(all.Select(i => i.FilePath), StringComparer.OrdinalIgnoreCase);
@@ -102,7 +105,7 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
                     pruned.Add(WinPath.GetFileName(gone.FilePath));
                 }
             }
-            return new ReconcileResult(scan.Present.Count, fresh.Count, pruned.Count, skipReason is not null);
+            return new ReconcileResult(scan.Present.Count, fresh.Count, pruned.Count, skipReason is not null, SkippedInvalid: scan.SkippedInvalid);
         }, ct);
 
         // 提交之后才写日志：事务回滚时不留假记录
@@ -113,7 +116,7 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
         }
         foreach (var name in pruned) log.FenceItemPruned(name);
         if (skipReason is not null) log.DesktopScanPruneSkipped(skipReason);
-        log.DesktopScanCompleted(outcome.Found, outcome.Written, outcome.Pruned, outcome.PruneSkipped);
+        log.DesktopScanCompleted(outcome.Found, outcome.Written, outcome.Pruned, outcome.PruneSkipped, outcome.SkippedInvalid);
         return outcome;
     }
 }

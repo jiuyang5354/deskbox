@@ -109,9 +109,9 @@ public sealed class RollingFileLog : IEmbedLog, IDesktopScanLog
 
     public void DesktopScanStarted() => Info("DesktopScanStarted");
 
-    public void DesktopScanCompleted(int found, int fenceItemRowsWritten, int pruned, bool pruneSkipped) =>
+    public void DesktopScanCompleted(int found, int fenceItemRowsWritten, int pruned, bool pruneSkipped, int skippedInvalid) =>
         Info(string.Create(CultureInfo.InvariantCulture,
-            $"DesktopScanCompleted found={found} fenceItemRowsWritten={fenceItemRowsWritten} pruned={pruned} pruneSkipped={(pruneSkipped ? "true" : "false")}"));
+            $"DesktopScanCompleted found={found} fenceItemRowsWritten={fenceItemRowsWritten} pruned={pruned} pruneSkipped={(pruneSkipped ? "true" : "false")} skippedInvalid={skippedInvalid}"));
 
     public void FenceItemPruned(string fileName) => Info($"FenceItemPruned name=[{fileName}]");
 

@@ -402,7 +402,7 @@ public class DesktopScanLogTests
         public List<string> Lines { get; } = [];
         public void DesktopScanSkipped(string reason) => Lines.Add("skipped:" + reason);
         public void DesktopScanStarted() => Lines.Add("started");
-        public void DesktopScanCompleted(int found, int written, int pruned, bool skipped) => Lines.Add($"completed:{found}/{written}/{pruned}/{skipped}");
+        public void DesktopScanCompleted(int found, int written, int pruned, bool skipped, int invalid) => Lines.Add($"completed:{found}/{written}/{pruned}/{skipped}/{invalid}");
         public void FenceItemPruned(string fileName) => Lines.Add("pruned:" + fileName);
         public void DesktopScanPruneSkipped(string reason) => Lines.Add("pruneSkipped:" + reason);
         public void StagingFenceMissing() => Lines.Add("stagingMissing");

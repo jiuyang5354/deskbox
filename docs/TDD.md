@@ -218,7 +218,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 增量监听不在这一版。
 
 **实现落点**（研发补充，不改上面的规则）
-- `DesktopScanner`（Application/Files）：经 `IKnownFolders` + `IDirectoryLister` 读两个桌面的直接子项；与 `DesktopEnumerator` 不同，读失败不吞，记成「用户桌面读取失败（IOException）」/「公共桌面扫描中途出错（…）」等原因，供第 5 条判断。桌面路径为空按读取失败处理。file_id 无效的项不收，但仍算"磁盘上存在"，不会被删。
+- `DesktopScanner`（Application/Files）：经 `IKnownFolders` + `IDirectoryLister` 读两个桌面的直接子项；与 `DesktopEnumerator` 不同，读失败不吞，记成「用户桌面读取失败（IOException）」/「公共桌面扫描中途出错（…）」等原因，供第 5 条判断。桌面路径为空按读取失败处理。file_id 无效的项不收，但仍算"磁盘上存在"，不会被删；数量记在 `DesktopScanCompleted` 的附加字段 `skippedInvalid`（PRD v1.2.9 将同步此字段名）。
 - `DesktopReconciler`：一个 `InTransactionAsync`（SQLite 实现为 `BEGIN IMMEDIATE`）里完成第 3–8 条；`FenceItemPruned` / `DesktopScanPruneSkipped` / `DesktopScanCompleted` / `StagingFenceMissing` 在事务提交之后才写，回滚不留假记录。新增 `IFenceItemStore.ListAllAsync`。
 - `DesktopReconcile`（`IStartupReconcile`）：只读判断、托盘提示「已收纳 N 个桌面文件」、对账自身异常记 `DesktopReconcileFailed` 不外抛（方框照常显示，取消不吞）。`StartupSequence` 在枚举之后、嵌入之前调用；`App` 在 `TaskbarCreated` 时再调用一次并刷新界面。
 - 自然排序 `NaturalNameComparer`：数字段按数值比较，其余不区分大小写；完全相同时按序数比较保证稳定。
