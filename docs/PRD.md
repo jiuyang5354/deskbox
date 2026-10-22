@@ -1,6 +1,6 @@
-# 《DeskBox 桌面收纳》PRD v1.2.8
+# 《DeskBox 桌面收纳》PRD v1.2.9
 
-> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost → v1.2.3 新增跳过原因 AlreadyInProgress（同一文件已有进行中的整理） → v1.2.4 方框位置改为相对工作区的 DIP；显示器消失时方框临时挪到主屏、不落库，显示器回来后按原记录恢复；Orphaned 状态已废弃，被临时挪到主屏取代；补充低于 100% 缩放的已知限制；默认收纳库路径定为 `%USERPROFILE%\DeskBox\Vault`，与桌面不同盘时按跨盘跳过、不复制 → v1.2.5 补齐方框 UI 验收：拖放位置/大小、方框间拖文件、右键菜单、第二实例唤醒置前 → v1.2.6 删除方框规则（文件归属转到暂存方框、确认框、空方框直接删、只读拦截、缺暂存方框拒绝）；启动时补建缺失的暂存方框；预览版 zip 的运行与降级提醒 → v1.2.7 桌面嵌入兼容显示（方框必须能看见，嵌不进桌面退回置底窗口）；日志文件路径、滚动与隐私说明 → v1.2.8 启动对账（P0）：启动和 Explorer 重启时把桌面文件对账进暂存方框，清理文件已不存在的归属，扫描不完整时不删任何记录。
+> 版本记录：v1.0 初稿 → v1.1 采纳 TDD 三处澄清 + 安全模式/应急开关/首次引导 → v1.2 开源（MIT）、SignPath 签名、winget 分发、隐私措辞修订 → v1.2.1 重名自动改名规则、补回遗漏用户故事、完整非功能需求、补充 Gherkin、整理任务状态机修订 → v1.2.2 跳过原因用户文案、Lost 状态与提示、改名前去除末尾点和空格、恢复连续失败 3 次转 Lost → v1.2.3 新增跳过原因 AlreadyInProgress（同一文件已有进行中的整理） → v1.2.4 方框位置改为相对工作区的 DIP；显示器消失时方框临时挪到主屏、不落库，显示器回来后按原记录恢复；Orphaned 状态已废弃，被临时挪到主屏取代；补充低于 100% 缩放的已知限制；默认收纳库路径定为 `%USERPROFILE%\DeskBox\Vault`，与桌面不同盘时按跨盘跳过、不复制 → v1.2.5 补齐方框 UI 验收：拖放位置/大小、方框间拖文件、右键菜单、第二实例唤醒置前 → v1.2.6 删除方框规则（文件归属转到暂存方框、确认框、空方框直接删、只读拦截、缺暂存方框拒绝）；启动时补建缺失的暂存方框；预览版 zip 的运行与降级提醒 → v1.2.7 桌面嵌入兼容显示（方框必须能看见，嵌不进桌面退回置底窗口）；日志文件路径、滚动与隐私说明 → v1.2.8 启动对账（P0）：启动和 Explorer 重启时把桌面文件对账进暂存方框，清理文件已不存在的归属，扫描不完整时不删任何记录 → v1.2.9 启动对账删行范围收窄到当前用户桌面/公共桌面直属文件；无效 `file_id` 的项跳过并逐条告警；对账错误日志只记异常类型名和错误码、不含异常消息和完整路径（代码改动随 #27 一起提交）；补充桌面搬家后的已知限制与 FWF_NOICONS 前置条件。
 
 ## 1. 背景与目标
 Windows 用户的桌面常堆满快捷方式、截图和临时文件。DeskBox 要做到：
@@ -219,7 +219,7 @@ stateDiagram-v2
 2. 已运行实例收到信号后：把主界面/方框窗口带到前台（恢复最小化、激活、置前）；若当时在托盘，同样显示方框。
 3. 同一时刻系统里只存在一个 DeskBox 进程在写库和整理。
 
-## 7B. 启动对账（v1.2.8，P0）
+## 7B. 启动对账（v1.2.8，v1.2.9 修订，P0）
 > 技术实现见 TDD §4.5.5（v1.0.14），本节为产品规则。
 
 **时机**：启动时在枚举桌面之后、嵌入之前执行一次；Explorer 重启（`TaskbarCreated`）后再执行一次。实时增量监听不在本次范围，后续单独 PR。
@@ -229,14 +229,21 @@ stateDiagram-v2
 2. 范围是用户桌面 + 公共桌面。去重只针对枚举结果里同一个完整路径出现多次的情况（路径比较不区分大小写），同一路径只收一次。用户桌面和公共桌面上的同名文件完整路径不同，两个都收（两条记录），与资源管理器的显示一致。公共桌面的文件只记归属，**绝不移动**。
 3. 隐藏文件和系统文件不收（例如 `desktop.ini`）；快捷方式和文件夹照常收。
 4. 已经在某个方框里的文件保持原样；新发现的文件追加到暂存方框末尾，按自然排序、不区分大小写。
-5. 文件已不存在的归属行会被清理，每清理一条记一条 `FenceItemPruned`，日志里只记文件名。仅云端的文件（OneDrive 占位文件）视为存在，不清理。
+5. 文件已不存在的归属行会被清理，每清理一条记一条 `FenceItemPruned`，日志里只记文件名。仅云端的文件（OneDrive 占位文件）视为存在，不清理。**（v1.2.9）只清理父目录正好是本次扫描的用户桌面或公共桌面、且文件已不在磁盘上的行**；其他行（例如父目录是桌面搬家前的旧路径）一律保留，计入跳过数，并记一条 `DesktopScanPruneSkipped`，写明跳过了多少行。
 6. **只有扫描完整成功才清理。** 用户桌面和公共桌面都读取成功，才算扫描完整。以下任一情况都一条不删，并记一条 `DesktopScanPruneSkipped` 警告，写明原因：读取桌面目录失败（用户桌面或公共桌面任一读取失败，警告里写明是哪一个）；扫描中途出错；扫描找到 0 个文件但数据库里已有归属行。
 7. 暂存方框缺失时，对账什么都不写，记一条 `StagingFenceMissing`。这里不补建暂存方框，补建由启动自检负责（TDD §4.6）。
-8. 对账结束记一条 `DesktopScanCompleted`，带上 `found`、`fenceItemRowsWritten`、`pruned`、`pruneSkipped`。
+8. 对账结束记一条 `DesktopScanCompleted`，带上 `found`、`fenceItemRowsWritten`、`pruned`、`pruneSkipped`、`skippedInvalid`。
+9. **（v1.2.9）`file_id` 无效的项**：不收纳、也不删除对应的已有行；每个这样的项记一条 `DesktopItemSkippedInvalidFileId` 警告，只写文件名，不写完整路径；跳过的个数计入 `DesktopScanCompleted` 的 `skippedInvalid`。
+10. **（v1.2.9）对账不并发**：对账进行中收到 `TaskbarCreated` 时不会同时再跑一次；本次运行期间收到的所有信号合并成一次，在当前这次结束后只补跑一次。
+11. **（v1.2.9）对账错误日志脱敏**：`DesktopReconcileFailed` 以及任何对账相关的错误日志，只记异常类型名和 `HResult`；SQLite 异常另记 `SqliteErrorCode`。绝不写 `ex.Message`，也不写任何路径。启动对账和 `TaskbarCreated` 重跑两条错误路径都适用。代码改动随 #27 一起提交。
 
 **用户提示**：不弹窗。本次实际写入的行数 N 大于 0 时，托盘提示一次「已收纳 N 个桌面文件」；N 为 0 时不提示。
 
 **验收**：桌面上的文件出现在暂存方框里；日志中 `fenceItemRowsWritten` > 0；重启后不出现重复的文件。
+
+**已知限制（v1.2.9）**：桌面文件夹搬家（例如改到 OneDrive 或其他盘）后，旧路径下的行按规则 5 保留不删，方框里可能同时出现一个失效的旧图标和一个新图标。后续修复：按 `file_id` 把旧行迁到新路径，排在 FWF_NOICONS 之前完成。
+
+**FWF_NOICONS 前置条件（v1.2.9）**：开启 FWF_NOICONS（隐藏桌面原生图标）之前，必须先让 `file_id` 无效、因而没被收纳的文件对用户可见（否则这些文件在桌面和方框里都看不到）；同时上面的旧行迁移也须完成。
 
 ## 8. Gherkin 验收（节选）
 ```gherkin
@@ -556,6 +563,57 @@ Feature: 启动对账（v1.2.8）
   Scenario: 只读模式下不写入
     Given 应用处于只读模式，桌面上有未收纳的文件
     When 启动 DeskBox
+    Then 不写入、不删除任何归属行
+    And 记一条 DesktopScanSkipped
+
+Feature: 启动对账删行收窄与无效 file_id（v1.2.9）
+  Scenario: 桌面搬家后旧路径下的 3 行全部保留
+    Given 数据库里有 3 条归属行，父目录都是桌面搬家前的旧路径，文件已不在磁盘上
+    When 启动 DeskBox 且扫描完整成功
+    Then 这 3 条归属行全部保留
+    And 记一条 DesktopScanPruneSkipped，写明跳过 3 行
+    And DesktopScanCompleted 中 pruned 为 0
+
+  Scenario: 只清理当前桌面直属且已不存在的行
+    Given 暂存方框里有当前用户桌面下 a.txt 的归属，a.txt 已被删除
+    When 启动 DeskBox 且扫描完整成功
+    Then a.txt 的归属行被删除，记一条 FenceItemPruned
+
+  Scenario: file_id 无效的项跳过并告警
+    Given 桌面上有一个 bad.txt，读取到的 file_id 无效
+    When 启动 DeskBox
+    Then bad.txt 不被收纳，已有的对应行也不被删除
+    And 记一条 DesktopItemSkippedInvalidFileId 警告，只含文件名 bad.txt，不含完整路径
+    And DesktopScanCompleted 中 skippedInvalid 为 1
+
+  Scenario: TaskbarCreated 重跑不重复收纳
+    Given DeskBox 正在运行，桌面文件已全部收进方框
+    When Explorer 重启并广播 TaskbarCreated
+    Then 对账重跑一次
+    And 每个文件仍只有一条归属记录，fenceItemRowsWritten 为 0，托盘不提示
+
+  Scenario: TaskbarCreated 重跑时对账出错不崩溃
+    Given DeskBox 正在运行
+    When Explorer 重启后的对账抛出异常（含取消）
+    Then DeskBox 继续运行不崩溃，并记录错误日志
+
+  Scenario: 对账进行中收到多次 TaskbarCreated 只补跑一次
+    Given 启动对账正在进行
+    When 对账结束前 Explorer 连续广播 3 次 TaskbarCreated
+    Then 两次对账不会同时运行
+    And 当前这次结束后只补跑一次，对账总共执行 2 次
+    And 每个文件仍只有一条归属记录
+
+  Scenario: 对账失败日志不含路径
+    Given 对账时抛出一个 SQLite 异常，异常消息里包含完整的桌面路径
+    When 对账失败
+    Then 记一条 DesktopReconcileFailed，含异常类型名、HResult 和 SqliteErrorCode
+    And 日志内容不含任何路径，也不含异常消息原文
+    # Explorer 重启（TaskbarCreated）后的重跑失败时同样适用
+
+  Scenario: 只读模式下 TaskbarCreated 不重跑写入
+    Given 应用处于只读模式
+    When Explorer 重启并广播 TaskbarCreated
     Then 不写入、不删除任何归属行
     And 记一条 DesktopScanSkipped
 ```
