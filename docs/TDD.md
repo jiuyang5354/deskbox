@@ -1,4 +1,6 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.12
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.13
+
+> v1.0.13：P0 修复——Win11 24H2/25H2 上方框看不见。§4.5.1 按窗口结构判断层级并加挂载后校验；§4.5.3 兼容显示钉在最底；§4.5.5 启动扫描日志与 fence_item 为空的调查；§6 落盘日志。
 
 ## 1. 技术选型
 | 项 | 选型 | 理由 / 备选 |
@@ -147,13 +149,23 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - 方框状态机（含 Deleted 终态）不变，已被 PM 接受。
 
 ### 4.5 桌面层嵌入与 Explorer 重启自愈（v1.0.8，任务 4）
-#### 4.5.1 嵌入
-- `DesktopEmbedder`（Application）只依赖端口；所有 Win32 调用在 `Win32DesktopWindowing`（Infrastructure，`net8.0-windows`）中。**不注入 DLL、不装钩子**。
-- 一轮挂接 `AttachAllAsync`：
-  1. 丢弃上一轮所有句柄（`WorkerW = Zero`）；
-  2. 从数据库读方框（`IFenceStore.ListAsync`），读当前显示器；
-  3. `FindWindow("Progman")` → `SendMessageTimeout(Progman, 0x052C, …, 1s)` → 找 WorkerW（经典：持有 `SHELLDLL_DefView` 的顶层窗口之后的 `WorkerW`；Win11 24H2：`Progman` 的子 `WorkerW`）；
-  4. 对每个方框 `IBoxWindows.Ensure`（句柄已销毁则重建）→ `SetParent(box, WorkerW)` → 按 4.5.2 计算的屏幕物理像素 `SetBounds`（嵌入时换算到 WorkerW 客户区坐标）。
+#### 4.5.1 嵌入（v1.0.13 重写）
+- `DesktopEmbedder`（Application）只依赖端口；Win32 调用在 Infrastructure。**不注入 DLL、不装钩子**。端口分两层：
+  - `IDesktopWindowTree`（只读，可注入）：`FindProgman`、`SpawnWorkerW`（0x052C）、`TopLevelWindows`、`FindChild`、`ClassName`、`IsVisible`、`Parent`、`Root`（GA_ROOT）、`OsVersion`。实现 `Win32DesktopWindowTree`；单元测试用 `FakeDesktop` 假窗口树。
+  - `IDesktopWindowing`（操作）：`SetParent`、`PinToBottom` / `Unpin`、`SetBounds`。实现 `Win32DesktopWindowing`。
+- **层级判断按窗口结构，不按系统版本号或 ProductName**（`DesktopHostLocator.Locate`）。发完 0x052C 后：
+  1. Progman 下面有子窗口 `WorkerW` → **新层级 `ProgmanChild`**：父窗口用 **Progman**。**必须先查新层级**：24H2 上残留的隐藏顶层 WorkerW 可能与 Progman 的子 WorkerW 同时存在，先按旧规则找会挂到那个隐藏窗口上，正是本次 P0 的成因；
+  2. 否则 → **旧层级 `Legacy`**（逻辑与 v1.0.12 相同）：持有 `SHELLDLL_DefView` 的顶层窗口之后的那个顶层 `WorkerW`；
+  3. 找不到 Progman 或旧层级下找不到 WorkerW → `NotFound`，直接兼容显示。
+- 挂接 `SetParent`：先改样式为 `WS_CHILD`、去掉 `WS_POPUP`，再 `SetParent`，成功后 `SetWindowPos(HWND_TOP)` 放到父窗口子窗口 Z 序最上面（新层级下即 `SHELLDLL_DefView` 之上，能看到也能点到）；失败则恢复原样式。还原顶层时反向改回 `WS_POPUP`。
+- 坐标：`SetBounds` 收屏幕物理像素，嵌入时用 `ClientToScreen(parent, 0,0)` 取父窗口客户区原点，按 `ScreenRect.RelativeTo` 换算（Progman 覆盖整个虚拟屏幕，原点可能为负）。数据库仍存工作区相对 DIP（§4.5.2 不变）。
+- **挂载后校验**（`EmbedValidator`），三条任一不满足 → 撤回挂载（`SetParent(box, 0)`）、退回兼容显示、记警告：
+  1. 父窗口链上每一层都 `IsVisible`；
+  2. 用 `GetWindowRect` 读方框**实际**屏幕位置：必须与至少一块显示器的工作区有交集，且 x / y / 宽 / 高与 `FenceLayout.Place` 的目标偏差都不超过 1px（发现坐标换算错误）；
+  3. `Root(box)` 是 Progman，或类名为 `WorkerW` 且可见。
+  规则：**方框必须能看见，嵌不进桌面也要显示**。
+- **逐个方框隔离**：每个方框的「挂接 + 放置（`SetBounds`）+ 校验」是一个整体，其中任何一步抛异常（`OutOfMemoryException`、取消除外）都按校验失败处理：撤回挂接、退回兼容显示、日志 `validation` 字段写明异常类型和消息，然后继续下一个方框；兼容显示自身的放置再抛也只记日志不外抛。首次 `StartAsync` 与 `TaskbarCreated` 重新嵌入走同一路径，一个方框出错不会让其他方框被跳过、`Mode` 不更新或异常冒出 `StartAsync`。
+- 每个方框每次挂接写一条日志 `Embed fence=… os=[build <CurrentBuild.UBR>, DisplayVersion <25H2>] layering=… parent=[类名链] validation=[…] path=Embedded|Fallback`（兼容显示为 WARN）。
 - 同一时间只有一轮挂接（`SemaphoreSlim`）。
 
 #### 4.5.2 坐标、DPI 与显示器
@@ -163,11 +175,14 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 - 所属显示器不在了：按主显示器工作区与 DPI 放置，再整体挪进主显示器工作区（先缩到不超过工作区，再平移），结果一定完全可见；**不回写数据库**，显示器接回后回到原位置。所有放置结果都会做同样的夹取。
 - 方框位置**只从数据库读取**，从不沿用重启前窗口的位置 / 大小。
 
-#### 4.5.3 Explorer 重启自愈与降级模式
-- `Win32ShellNotifications` 在专用 STA 线程上建隐藏的**顶层**窗口（`TaskbarCreated` 只广播给顶层窗口，`HWND_MESSAGE` 收不到），`RegisterWindowMessage("TaskbarCreated")` 并 `ChangeWindowMessageFilterEx` 放行；事件封送到 UI 线程。同一窗口转发 `WM_DISPLAYCHANGE` 作为 `MonitorsChanged`。
-- 收到 `TaskbarCreated`：执行一轮 `AttachAllAsync`（丢弃旧句柄、重新找 WorkerW、重建已随旧 WorkerW 销毁的方框窗口并挂到**新** WorkerW、位置从数据库读）。不再有 5 秒轮询。
-- **降级模式**：找不到 Progman、0x052C 后找不到 WorkerW、或 `SetParent` 失败时，不抛异常、不重试、不轮询：方框还原为普通顶层窗口并 `SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)` 置底，照常显示在数据库位置；`Mode = Degraded`。下一次 `TaskbarCreated` 时再尝试嵌入。事件处理中的异常通过 `AttachFailed` 上报（不抛回消息循环），并保持降级。
-- 单元测试（假 Win32，`FakeDesktop`）：无 Progman → 降级且 `FindProgman` 只调用一次；`TaskbarCreated` 后 → 嵌入；Explorer 重启后方框挂到新的 WorkerW、位置来自数据库；显示器移除（完全 / 一半在外 / 超大）后完全在主显示器工作区内；100/150/200% DPI 往返精确。
+#### 4.5.3 Explorer 重启自愈与兼容显示（v1.0.13）
+- `Win32ShellNotifications` 在专用 STA 线程上建隐藏的**顶层**窗口接收 `TaskbarCreated` / `WM_DISPLAYCHANGE`，事件封送到 UI 线程。
+- 收到 `TaskbarCreated`：**完整重跑**「发 0x052C → 判断层级 → 挂接 → 校验」，从不沿用上一轮的父窗口句柄（例如旧层级挂好后系统升级到 24H2、Explorer 重启，下一轮会挂到 Progman）。当前处于兼容显示时同样每次重试；成功后 `Unpin` 并把托盘提示恢复为「DeskBox」。无轮询。
+- **兼容显示（降级）**：找不到桌面层、`SetParent` 失败或挂载后校验失败时，方框还原为普通顶层窗口并 `PinToBottom`：加 `WS_EX_NOACTIVATE`、`SetWindowPos(HWND_BOTTOM, SWP_NOACTIVATE)`，并登记为"钉住"；方框窗口过程处理 `WM_WINDOWPOSCHANGING`，按 `FallbackZOrder.Adjust` 把任何改 Z 序的请求改成 `HWND_BOTTOM`（修复「降级模式下方框浮到最前面」）。`Mode = Degraded`。
+- 兼容显示登记表 `PinnedWindows`：`Unpin` 或窗口收到 `WM_NCDESTROY` 时移除（句柄可能被系统复用，不能误钉别的窗口）。
+- **第二实例唤醒**（`EmbedAwareActivator`）：嵌入桌面时照旧恢复并置前；兼容显示时**不** `Activate`、不把方框带到前面，只弹一次托盘气泡「DeskBox 已在运行」。
+- 托盘图标（`Win32TrayIcon`，Shell_NotifyIcon）：兼容显示时提示「DeskBox：桌面嵌入不可用，已切换为兼容显示」，不弹窗；文件收纳和移动照常可用，**不进只读模式**。Explorer 重启后重新添加图标。
+- 单元测试（`FakeDesktop` 假窗口树，`DesktopEmbedTests` / `DesktopLayeringTests`）：旧层级挂到壁纸层 WorkerW；新层级挂到 Progman；只有隐藏的 WorkerW → 校验失败 → 兼容显示且可见；旧层级挂好后 `TaskbarCreated` 时变成新层级 → 重新挂到 Progman；兼容显示每次 `TaskbarCreated` 重试，成功后提示恢复；兼容显示的方框被点击后仍在其他窗口下面（修复前为红）；校验拒绝屏外方框与错误的根窗口；无 Progman → 降级且不忙重试；Explorer 重启后位置来自数据库。
 
 #### 4.5.4 真实桌面测试与真机清单
 - `tests/DeskBox.Desktop.Tests`（`Category=WindowsIntegration`，仅 `windows-integration.yml` 手动触发）：真实窗口嵌入到 WorkerW；结束 explorer.exe 再启动，断言方框的父窗口是**新的** WorkerW，`finally` 中保证 explorer.exe 重新运行。
@@ -176,6 +191,11 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   2. 任务管理器结束 explorer.exe 再运行：方框在数秒内回到原位置（数据库位置）；
   3. 拔掉方框所在显示器：方框完整出现在主显示器工作区；接回后回到原显示器原位置；
   4. 100% / 150% / 200% 缩放下拖动并重启 DeskBox，位置不漂移。
+
+#### 4.5.5 启动扫描日志与 fence_item 为空的调查（v1.0.13）
+- `StartupSequence` 新增可选 `IDesktopScanLog`：只读跳过枚举时写 `WARN DesktopScanSkipped reason=[…]`；执行枚举时先写 `INFO DesktopScanStarted`，结束写 `INFO DesktopScanCompleted found=N user=U public=P fenceItemRowsWritten=W`。只记数量，不记文件名和文件内容。
+- 判断方法：日志里没有 `DesktopScanStarted` 也没有 `DesktopScanSkipped` → 启动没走到枚举（之前就失败了，看 ERROR）；有 `DesktopScanSkipped` → 只读模式跳过；有 `DesktopScanCompleted … fenceItemRowsWritten=0` 且 `found>0` → 枚举执行了但没写库。
+- **调查结论**：`StartupSequence` 把枚举结果只放进 `StartupResult.DesktopItems`，`App.OnStartup` 没有使用它；代码里写 `fence_item` 的只有方框命令（改归属 / 移除 / 删方框）。也就是说**枚举执行了，但从来没有"把桌面文件放进暂存方框"的写库步骤**，所以 `fence_item` 必然为空。补这一步需要定规则（排序、公共桌面项、已在其他方框的文件、桌面文件被删时的清理、文件监听增量），本版只如实记 `fenceItemRowsWritten=0`，写库步骤另开任务，由 PM 判断优先级。
 
 ### 4.6 应用启动顺序（v1.0.10，启动接入 + 收纳库路径；v1.0.12 增加第 2.5 步）
 组合根只在 `DeskBox.App/App.xaml.cs`（`OnStartup`）：只有这里 new 基础设施对象（SQLite、Win32、WPF 窗口），其他层只依赖 Application 端口。顺序由 `Application/Startup/StartupSequence` 保证，严格为：
@@ -294,7 +314,8 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 UI 线程只渲染；枚举、规则匹配、IO 走 `Task.Run` + `Channel<T>`。图标 LRU 缓存 512 项；`VirtualizingWrapPanel` 支持 2000+ 文件。空闲无轮询（Explorer 巡检除外）。目标启动 ≤ 1.5 s，空闲内存 ≤ 80 MB。
 
 ## 6. 可观测性
-Serilog 写 `%LOCALAPPDATA%\DeskBox\logs`，每条带 `JobId` 与耗时；路径只记哈希 + 文件名。全局捕获 `DispatcherUnhandledException` 与 AppDomain 未处理异常。
+落盘日志（v1.0.13，`RollingFileLog`，Infrastructure.Core）：**拿到单实例锁之后才打开**（`StartupSequence` 的 `instanceAcquired` 回调里 `Open()` 并挂上 Trace 监听），打开前的写入直接丢弃，第二实例不建目录、不写文件；`%LOCALAPPDATA%\DeskBox\logs\deskbox.log`，单文件 5 MB，超过就滚动为 `deskbox.1.log`…`deskbox.3.log`（保留 3 份，最旧的丢弃）；写失败不抛、只计数。`RollingFileTraceListener` 把现有 `Trace.TraceWarning/TraceError`（迁移、自检、恢复、启动失败）一并写入。路径和文件只记文件名与数量，不记文件内容。用户反馈问题时附上该目录（PRD §6A）。
+后续：每条带 `JobId` 与耗时；全局捕获 `DispatcherUnhandledException` 与 AppDomain 未处理异常。
 
 ## 7. 对 PRD 的澄清（已被 PM 采纳为 v1.1）
 1. `fence_item.file_path` 全局唯一。
