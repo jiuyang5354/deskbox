@@ -109,7 +109,7 @@ public sealed class RollingFileLogTests : IDisposable
         log.FenceItemPruned("gone.txt");
         log.DesktopScanPruneSkipped("公共桌面读取失败（IOException）");
         log.StagingFenceMissing();
-        log.DesktopReconcileFailed("IOException: x");
+        log.DesktopReconcileFailed("IOException hresult=0x80070020");
         log.DesktopScanCompleted(0, 0, 0, true, 0);
         log.DesktopItemSkippedInvalidFileId("odd.txt");
 
@@ -122,7 +122,7 @@ public sealed class RollingFileLogTests : IDisposable
         lines[5].Should().EndWith("[INFO] FenceItemPruned name=[gone.txt]");
         lines[6].Should().EndWith("[WARN] DesktopScanPruneSkipped reason=[公共桌面读取失败（IOException）]");
         lines[7].Should().Contain("[ERROR] StagingFenceMissing");
-        lines[8].Should().EndWith("[ERROR] DesktopReconcileFailed IOException: x");
+        lines[8].Should().EndWith("[ERROR] DesktopReconcileFailed IOException hresult=0x80070020");
         lines[9].Should().EndWith("pruneSkipped=true skippedInvalid=0");
         lines[10].Should().EndWith("[WARN] DesktopItemSkippedInvalidFileId name=[odd.txt]");
         FluentActions.Invoking(() => log.EmbedAttempt(null!)).Should().Throw<ArgumentNullException>();

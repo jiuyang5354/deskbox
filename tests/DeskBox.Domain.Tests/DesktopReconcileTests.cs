@@ -381,6 +381,41 @@ public sealed class DesktopReconcileTests
         _items.Rows.Should().BeEmpty("事务回滚，一行都没写");
     }
 
+    /// <summary>与 Microsoft.Data.Sqlite 同名同属性的替身，验证按属性名读取错误码。</summary>
+    private sealed class SqliteException(string message, int code) : Exception(message)
+    {
+        public int SqliteErrorCode { get; } = code;
+    }
+
+    private sealed class FailingFolders(Exception ex) : IKnownFolders
+    {
+        public string UserDesktop => throw ex;
+        public string PublicDesktop => User;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Failure_logs_type_and_hresult_but_never_the_message_path(bool sqlite)
+    {
+        const string secret = @"C:\Users\alice\Desktop\工资单.xlsx";
+        Exception ex = sqlite ? new SqliteException($"database locked: {secret}", 5) { HResult = unchecked((int)0x80004005) } : new InvalidOperationException($"bad {secret}");
+        OnDisk(User, "a.txt");
+        var sut = new DesktopReconcile(new DesktopScanner(new FailingFolders(ex), _lister), new DesktopReconciler(_db, _fences, _items, _log), _mode, _log, _tray);
+        var reconcile = new Throwing(ex);
+        using var taskbar = new TaskbarCreatedReconcile(new Shell(), reconcile, () => Task.CompletedTask, _log);
+
+        (await sut.RunAsync()).Should().BeNull();
+        await taskbar.HandleAsync();
+
+        var expected = sqlite ? "SqliteException hresult=0x80004005 sqliteErrorCode=5" : "InvalidOperationException hresult=0x80131509";
+        _log.Lines.Should().Equal("failed:" + expected, "failed:TaskbarCreated " + expected);
+        _log.Lines.Should().OnlyContain(l => !l.Contains("alice") && !l.Contains("工资单") && !l.Contains(@"C:\"), "日志不写异常 Message 里的路径");
+    }
+
+    [Fact]
+    public void FailureText_rejects_null() => FluentActions.Invoking(() => FailureText.Describe(null!)).Should().Throw<ArgumentNullException>();
+
     [Fact]
     public async Task Cancellation_is_not_swallowed()
     {
@@ -544,7 +579,7 @@ public sealed class DesktopReconcileTests
         await Task.Delay(50);
 
         reconcile.Calls.Should().Be(2);
-        _log.Lines.Should().HaveCount(2).And.OnlyContain(l => l.StartsWith(cancelled ? "skipped:TaskbarCreated 对账已取消" : "failed:TaskbarCreated InvalidOperationException: boom"));
+        _log.Lines.Should().HaveCount(2).And.OnlyContain(l => l.StartsWith(cancelled ? "skipped:TaskbarCreated 对账已取消" : "failed:TaskbarCreated InvalidOperationException hresult=0x80131509"));
     }
 
     [Fact]

@@ -204,7 +204,7 @@ public sealed class DesktopReconcile(DesktopScanner scanner, DesktopReconciler r
         }
         catch (Exception ex) when (ex is not (OperationCanceledException or OutOfMemoryException))
         {
-            log.DesktopReconcileFailed($"{ex.GetType().Name}: {ex.Message}");
+            log.DesktopReconcileFailed(FailureText.Describe(ex));
             return null;
         }
     }

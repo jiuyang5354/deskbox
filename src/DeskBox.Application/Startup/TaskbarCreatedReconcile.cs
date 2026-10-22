@@ -68,7 +68,7 @@ public sealed class TaskbarCreatedReconcile : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            _log.DesktopReconcileFailed($"TaskbarCreated {ex.GetType().Name}: {ex.Message}");
+            _log.DesktopReconcileFailed($"TaskbarCreated {FailureText.Describe(ex)}");
         }
     }
 
