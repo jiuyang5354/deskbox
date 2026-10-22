@@ -234,6 +234,7 @@ stateDiagram-v2
 7. 暂存方框缺失时，对账什么都不写，记一条 `StagingFenceMissing`。这里不补建暂存方框，补建由启动自检负责（TDD §4.6）。
 8. 对账结束记一条 `DesktopScanCompleted`，带上 `found`、`fenceItemRowsWritten`、`pruned`、`pruneSkipped`、`skippedInvalid`。
 9. **（v1.2.9）`file_id` 无效的项**：不收纳、也不删除对应的已有行；每个这样的项记一条 `DesktopItemSkippedInvalidFileId` 警告，只写文件名，不写完整路径；跳过的个数计入 `DesktopScanCompleted` 的 `skippedInvalid`。
+10. **（v1.2.9）对账不并发**：对账进行中收到 `TaskbarCreated` 时不会同时再跑一次；本次运行期间收到的所有信号合并成一次，在当前这次结束后只补跑一次。
 
 **用户提示**：不弹窗。本次实际写入的行数 N 大于 0 时，托盘提示一次「已收纳 N 个桌面文件」；N 为 0 时不提示。
 
@@ -594,6 +595,13 @@ Feature: 启动对账删行收窄与无效 file_id（v1.2.9）
     Given DeskBox 正在运行
     When Explorer 重启后的对账抛出异常（含取消）
     Then DeskBox 继续运行不崩溃，并记录错误日志
+
+  Scenario: 对账进行中收到多次 TaskbarCreated 只补跑一次
+    Given 启动对账正在进行
+    When 对账结束前 Explorer 连续广播 3 次 TaskbarCreated
+    Then 两次对账不会同时运行
+    And 当前这次结束后只补跑一次，对账总共执行 2 次
+    And 每个文件仍只有一条归属记录
 
   Scenario: 只读模式下 TaskbarCreated 不重跑写入
     Given 应用处于只读模式
