@@ -507,6 +507,28 @@ public sealed class DesktopReconcileTests
         _items.Rows.Should().HaveCount(1);
     }
 
+    [Fact]
+    public async Task Three_TaskbarCreated_signals_during_a_run_coalesce_into_exactly_two_runs()
+    {
+        OnDisk(User, "a.txt");
+        var shell = new Shell();
+        var gate = new TaskCompletionSource();
+        var runs = 0;
+        using var sut = new TaskbarCreatedReconcile(shell, Sut(), async () => { if (++runs == 1) await gate.Task; }, _log);
+
+        var first = sut.HandleAsync();
+        shell.Raise();
+        shell.Raise();
+        shell.Raise(); // 运行中来 3 次信号：最多只挂一次补跑
+        gate.SetResult();
+        await first;
+        await Task.Delay(50);
+
+        runs.Should().Be(2, "首次 1 次 + 合并后的补跑 1 次");
+        _log.Lines.Count(l => l.StartsWith("completed")).Should().Be(2);
+        _items.Rows.Should().HaveCount(1);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

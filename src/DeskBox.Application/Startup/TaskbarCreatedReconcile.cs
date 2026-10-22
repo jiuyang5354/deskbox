@@ -13,7 +13,12 @@ public sealed class TaskbarCreatedReconcile : IDisposable
     private readonly IStartupReconcile _reconcile;
     private readonly Func<Task> _refresh;
     private readonly IDesktopScanLog _log;
+    // 线程假设：TaskbarCreated 由 Win32ShellNotifications 在界面线程触发，HandleAsync 里的 await 续体也回到界面线程（单线程）。
+    // 因此 _running / _pending 不会被并发改写。若改在线程池上触发，信号恰好落在 while 循环退出之后、_running 清零之前
+    // 时会被丢掉（看到 _running==1 只置了 _pending，而循环已不再检查），届时需改用锁或在清零后再查一次 _pending。
     private int _running;
+
+    // 运行期间来多少次信号都只记成一次待补跑（合并），跑完后最多补跑一次。
     private int _pending;
 
     public TaskbarCreatedReconcile(IShellNotifications shell, IStartupReconcile reconcile, Func<Task> refresh, IDesktopScanLog log)
