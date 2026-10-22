@@ -66,4 +66,7 @@ public interface IDesktopScanLog
 
     /// <summary>对账本身失败（数据库异常等），方框照常显示。</summary>
     void DesktopReconcileFailed(string error);
+
+    /// <summary>file_id 无效、未收的桌面项（警告，只写文件名）。</summary>
+    void DesktopItemSkippedInvalidFileId(string fileName);
 }

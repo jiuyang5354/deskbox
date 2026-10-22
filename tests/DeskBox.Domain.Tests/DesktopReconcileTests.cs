@@ -38,6 +38,7 @@ public sealed class DesktopReconcileTests
         public void DesktopScanPruneSkipped(string reason) => Lines.Add("pruneSkipped:" + reason);
         public void StagingFenceMissing() => Lines.Add("stagingMissing");
         public void DesktopReconcileFailed(string error) => Lines.Add("failed:" + error);
+        public void DesktopItemSkippedInvalidFileId(string fileName) => Lines.Add("invalidId:" + fileName);
     }
 
     private sealed class Tray : ITrayNotifier
@@ -342,6 +343,7 @@ public sealed class DesktopReconcileTests
         (r!.Written, r.Pruned, r.SkippedInvalid).Should().Be((0, 0, 2));
         _items.Rows.Keys.Should().Equal(keep.Id);
         _log.Lines.Last().Should().EndWith("skippedInvalid=2");
+        _log.Lines.Where(l => l.StartsWith("invalidId:")).Should().Equal(new[] { "invalidId:odd.txt", "invalidId:odd2.txt" }, "每项一条警告，只写文件名");
     }
 
     [Fact]
@@ -399,5 +401,137 @@ public sealed class DesktopReconcileTests
         c.Compare("x9", "x10").Should().BeNegative();
         c.Compare("B", "a").Should().BePositive();
         FluentActions.Awaiting(() => new DesktopReconciler(_db, _fences, _items, _log).ReconcileAsync(null!)).Should().ThrowAsync<ArgumentNullException>();
+    }
+
+    private sealed class Shell : IShellNotifications
+    {
+        public event EventHandler? TaskbarCreated;
+        public int Subscribers => TaskbarCreated?.GetInvocationList().Length ?? 0;
+        public void Raise() => TaskbarCreated?.Invoke(this, EventArgs.Empty);
+    }
+
+    private sealed class Throwing(Exception ex) : IStartupReconcile
+    {
+        public int Calls;
+        public Task<ReconcileResult?> RunAsync(CancellationToken ct = default)
+        {
+            Calls++;
+            return Task.FromException<ReconcileResult?>(ex);
+        }
+    }
+
+    [Fact]
+    public async Task Rows_under_an_old_desktop_path_are_not_pruned_and_skip_count_is_logged()
+    {
+        const string old = @"D:\OldProfile\Desktop";
+        Existing(_other, old + @"\a.txt", 0);
+        Existing(_other, old + @"\b.txt", 1);
+        Existing(_staging, old + @"\c.lnk", 0);
+        Existing(_staging, User + @"\gone.txt", 1);
+        OnDisk(User, "new.txt");
+
+        var r = await Sut().RunAsync();
+
+        r!.Pruned.Should().Be(1, "只删当前用户桌面下已不存在的 gone.txt");
+        _items.Rows.Values.Count(i => i.FilePath.StartsWith(old, StringComparison.Ordinal)).Should().Be(3, "旧桌面路径下的 3 行全部保留");
+        _log.Lines.Should().ContainSingle(l => l.StartsWith("pruneSkipped:")).Which.Should().Be("pruneSkipped:3 行不在当前桌面目录下，未删除");
+        _log.Lines.Should().ContainSingle(l => l.StartsWith("pruned:")).Which.Should().Be("pruned:gone.txt");
+    }
+
+    [Fact]
+    public async Task Parent_directory_match_is_case_insensitive_and_ignores_subfolders()
+    {
+        Existing(_other, User.ToUpperInvariant() + @"\gone.txt", 0);
+        Existing(_other, User + @"\sub\deep.txt", 1);
+        OnDisk(User, "kept.txt");
+
+        var r = await Sut().RunAsync();
+
+        r!.Pruned.Should().Be(1);
+        _items.Rows.Values.Select(i => i.FilePath).Should().Contain(User + @"\sub\deep.txt");
+        _log.Lines.Should().Contain("pruneSkipped:1 行不在当前桌面目录下，未删除");
+    }
+
+    [Fact]
+    public async Task TaskbarCreated_reruns_reconcile_once_without_duplicating_rows()
+    {
+        OnDisk(User, "a.txt", "b.txt");
+        var shell = new Shell();
+        var refreshed = 0;
+        await Sut().RunAsync(); // 启动时一次
+        using var sut = new TaskbarCreatedReconcile(shell, Sut(), () => { refreshed++; return Task.CompletedTask; }, _log);
+
+        await sut.HandleAsync();
+
+        _items.Rows.Should().HaveCount(2, "重跑不重复收");
+        _log.Lines.Count(l => l.StartsWith("completed")).Should().Be(2);
+        _log.Lines.Last().Should().Be("completed found=2 written=0 pruned=0 skipped=False skippedInvalid=0");
+        refreshed.Should().Be(1);
+        _tray.Notices.Should().ContainSingle("第二次写入 0 行，不再提示");
+        sut.Dispose();
+        shell.Subscribers.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TaskbarCreated_event_triggers_reconcile_and_read_only_mode_skips()
+    {
+        OnDisk(User, "a.txt");
+        _mode.EnterReadOnly("恢复失败");
+        var shell = new Shell();
+        var done = new TaskCompletionSource();
+        using var sut = new TaskbarCreatedReconcile(shell, Sut(), () => { done.SetResult(); return Task.CompletedTask; }, _log);
+
+        shell.Raise();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        _log.Lines.Should().Equal("skipped:恢复失败");
+        _items.Rows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task TaskbarCreated_overlapping_signal_runs_again_once_after_current_run()
+    {
+        OnDisk(User, "a.txt");
+        var shell = new Shell();
+        var gate = new TaskCompletionSource();
+        var refreshes = 0;
+        using var sut = new TaskbarCreatedReconcile(shell, Sut(), async () => { if (++refreshes == 1) await gate.Task; }, _log);
+
+        var first = sut.HandleAsync();
+        await sut.HandleAsync(); // 正在跑：只记待补跑
+        await sut.HandleAsync();
+        gate.SetResult();
+        await first;
+
+        refreshes.Should().Be(2, "跑完后只补跑一次，不并发");
+        _items.Rows.Should().HaveCount(1);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Throwing_reconcile_on_TaskbarCreated_does_not_propagate(bool cancelled)
+    {
+        Exception ex = cancelled ? new OperationCanceledException() : new InvalidOperationException("boom");
+        var shell = new Shell();
+        var reconcile = new Throwing(ex);
+        using var sut = new TaskbarCreatedReconcile(shell, reconcile, () => Task.CompletedTask, _log);
+
+        await FluentActions.Awaiting(sut.HandleAsync).Should().NotThrowAsync();
+        shell.Raise(); // async void 处理器：异常若外抛会打到同步上下文/进程
+        await Task.Delay(50);
+
+        reconcile.Calls.Should().Be(2);
+        _log.Lines.Should().HaveCount(2).And.OnlyContain(l => l.StartsWith(cancelled ? "skipped:TaskbarCreated 对账已取消" : "failed:TaskbarCreated InvalidOperationException: boom"));
+    }
+
+    [Fact]
+    public void TaskbarCreated_handler_rejects_null_dependencies()
+    {
+        var shell = new Shell();
+        FluentActions.Invoking(() => new TaskbarCreatedReconcile(null!, Sut(), () => Task.CompletedTask, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new TaskbarCreatedReconcile(shell, null!, () => Task.CompletedTask, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new TaskbarCreatedReconcile(shell, Sut(), null!, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new TaskbarCreatedReconcile(shell, Sut(), () => Task.CompletedTask, null!)).Should().Throw<ArgumentNullException>();
     }
 }

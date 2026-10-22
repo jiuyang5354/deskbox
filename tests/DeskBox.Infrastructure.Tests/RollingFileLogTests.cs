@@ -111,6 +111,7 @@ public sealed class RollingFileLogTests : IDisposable
         log.StagingFenceMissing();
         log.DesktopReconcileFailed("IOException: x");
         log.DesktopScanCompleted(0, 0, 0, true, 0);
+        log.DesktopItemSkippedInvalidFileId("odd.txt");
 
         var lines = File.ReadAllLines(log.CurrentPath);
         lines[0].Should().EndWith($"[INFO] Embed fence={id} os=[build 26200.9457, DisplayVersion 25H2] layering=ProgmanChild parent=[Progman(0x10)] validation=[ok] path=Embedded");
@@ -123,6 +124,7 @@ public sealed class RollingFileLogTests : IDisposable
         lines[7].Should().Contain("[ERROR] StagingFenceMissing");
         lines[8].Should().EndWith("[ERROR] DesktopReconcileFailed IOException: x");
         lines[9].Should().EndWith("pruneSkipped=true skippedInvalid=0");
+        lines[10].Should().EndWith("[WARN] DesktopItemSkippedInvalidFileId name=[odd.txt]");
         FluentActions.Invoking(() => log.EmbedAttempt(null!)).Should().Throw<ArgumentNullException>();
     }
 

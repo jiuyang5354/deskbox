@@ -81,11 +81,7 @@ public partial class App : System.Windows.Application
             // 启动对账：启动时一次（枚举之后、嵌入之前），收到 TaskbarCreated 时再一次（TDD v1.0.14 §4.5.5 第 1 条）
             var reconcile = new DesktopReconcile(FileMoverFactory.CreateDesktopScanner(),
                 new DesktopReconciler(db, fenceStore, itemStore, fileLog), Mode, fileLog, tray);
-            shell.TaskbarCreated += async (_, _) =>
-            {
-                await reconcile.RunAsync();
-                await RefreshUiAsync(ui);
-            };
+            Own(new TaskbarCreatedReconcile(shell, reconcile, () => RefreshUiAsync(ui), fileLog));
             var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath, new TraceMigrationLog()),
                 new StagingFenceSelfCheck(db, fenceStore, monitors, new TraceStagingLog()), recovery, desktop, embedder,
                 new MessageBoxNotifier(), Mode, fileLog, () =>

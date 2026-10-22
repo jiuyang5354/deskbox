@@ -407,6 +407,7 @@ public class DesktopScanLogTests
         public void DesktopScanPruneSkipped(string reason) => Lines.Add("pruneSkipped:" + reason);
         public void StagingFenceMissing() => Lines.Add("stagingMissing");
         public void DesktopReconcileFailed(string error) => Lines.Add("failed:" + error);
+        public void DesktopItemSkippedInvalidFileId(string fileName) => Lines.Add("invalidId:" + fileName);
     }
 
     private sealed class Parts(bool recoveryFails) : ISingleInstance, IDatabaseBootstrapper, IStagingSelfCheck, IStartupRecovery, IDesktopEnumerator, IStartupEmbedder, IStartupNotifier

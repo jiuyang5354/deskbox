@@ -6,8 +6,15 @@ using DeskBox.Domain.Files;
 namespace DeskBox.Application.Files;
 
 /// <summary>一次扫描的结果。Present 是磁盘上确实存在的全部路径（含 file_id 无效、不能收的项），用于判断哪些归属行该删。</summary>
-public sealed record DesktopScan(IReadOnlyList<DesktopItem> Items, IReadOnlySet<string> Present, IReadOnlyList<string> Failures, int SkippedInvalid = 0)
+public sealed record DesktopScan(IReadOnlyList<DesktopItem> Items, IReadOnlySet<string> Present, IReadOnlyList<string> Failures, int SkippedInvalid = 0,
+    IReadOnlyList<string>? ScannedDirectories = null, IReadOnlyList<string>? InvalidFileIdNames = null)
 {
+    /// <summary>本次读取成功的桌面目录；只有父目录等于其中之一的行才可能被删。</summary>
+    public IReadOnlyList<string> ScannedDirectories { get; } = ScannedDirectories ?? [];
+
+    /// <summary>file_id 无效、未收的项的文件名（只记文件名）。</summary>
+    public IReadOnlyList<string> InvalidFileIdNames { get; } = InvalidFileIdNames ?? [];
+
     /// <summary>用户桌面和公共桌面都读取成功、中途没出错。</summary>
     public bool Complete => Failures.Count == 0;
 }
@@ -27,7 +34,8 @@ public sealed class DesktopScanner(IKnownFolders folders, IDirectoryLister liste
         var items = new List<DesktopItem>();
         var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var failures = new List<string>();
-        var skippedInvalid = 0;
+        var invalid = new List<string>();
+        var scanned = new List<string>();
         foreach (var (name, dir, isPublic) in new[] { (UserDesktopName, folders.UserDesktop, false), (PublicDesktopName, folders.PublicDesktop, true) })
         {
             ct.ThrowIfCancellationRequested();
@@ -51,6 +59,7 @@ public sealed class DesktopScanner(IKnownFolders folders, IDirectoryLister liste
                 failures.Add($"{name}扫描中途出错（{ex.GetType().Name}）");
                 continue;
             }
+            scanned.Add(dir);
             foreach (var i in listed)
             {
                 if ((i.Attributes & (Win32FileAttributes.Hidden | Win32FileAttributes.System)) != 0) continue;
@@ -58,10 +67,10 @@ public sealed class DesktopScanner(IKnownFolders folders, IDirectoryLister liste
                 if (FenceItem.IsValidFileId(i.FileId))
                     items.Add(new DesktopItem(i.FullPath, i.FileId.ToUpperInvariant(), i.IsDirectory, isPublic, i.LastWriteTime));
                 else
-                    skippedInvalid++; // file_id 无效：不收，但仍算磁盘上存在、不删
+                    invalid.Add(WinPath.GetFileName(i.FullPath)); // file_id 无效：不收，但仍算磁盘上存在、不删
             }
         }
-        return new DesktopScan(items, present, failures, skippedInvalid);
+        return new DesktopScan(items, present, failures, invalid.Count, scanned, invalid);
     }
 }
 
@@ -82,6 +91,7 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
         ArgumentNullException.ThrowIfNull(scan);
         var pruned = new List<string>();
         string? skipReason = null;
+        string? outsideReason = null;
         var outcome = await db.InTransactionAsync(async u =>
         {
             var staging = (await fences.ListAsync(u, ct)).FirstOrDefault(f => f.IsStaging);
@@ -99,7 +109,11 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
             else if (scan.Present.Count == 0 && all.Count > 0) skipReason = $"扫描到 0 项但库里有 {all.Count} 行";
             else
             {
-                foreach (var gone in all.Where(i => !scan.Present.Contains(i.FilePath)))
+                var missing = all.Where(i => !scan.Present.Contains(i.FilePath)).ToList();
+                var inScope = missing.Where(i => IsUnderScannedDesktop(i.FilePath, scan.ScannedDirectories)).ToList();
+                var outside = missing.Count - inScope.Count;
+                if (outside > 0) outsideReason = $"{outside} 行不在当前桌面目录下，未删除";
+                foreach (var gone in inScope)
                 {
                     await items.DeleteAsync(u, gone.Id, ct);
                     pruned.Add(WinPath.GetFileName(gone.FilePath));
@@ -109,6 +123,7 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
         }, ct);
 
         // 提交之后才写日志：事务回滚时不留假记录
+        foreach (var name in scan.InvalidFileIdNames) log.DesktopItemSkippedInvalidFileId(name);
         if (outcome.StagingMissing)
         {
             log.StagingFenceMissing();
@@ -116,8 +131,16 @@ public sealed class DesktopReconciler(IUnitOfWorkFactory db, IFenceStore fences,
         }
         foreach (var name in pruned) log.FenceItemPruned(name);
         if (skipReason is not null) log.DesktopScanPruneSkipped(skipReason);
+        else if (outsideReason is not null) log.DesktopScanPruneSkipped(outsideReason);
         log.DesktopScanCompleted(outcome.Found, outcome.Written, outcome.Pruned, outcome.PruneSkipped, outcome.SkippedInvalid);
         return outcome;
+    }
+
+    /// <summary>行的父目录等于（不区分大小写）本次读取成功的某个桌面目录。旧桌面路径（桌面被迁移）下的行不删。</summary>
+    private static bool IsUnderScannedDesktop(string path, IReadOnlyList<string> dirs)
+    {
+        var parent = WinPath.GetDirectoryName(path).TrimEnd('\\', '/');
+        return dirs.Any(d => WinPath.PathEquals(parent, d.TrimEnd('\\', '/')));
     }
 }
 
