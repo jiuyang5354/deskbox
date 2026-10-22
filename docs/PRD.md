@@ -483,6 +483,12 @@ Feature: 启动对账（v1.2.8）
     Then 每个文件仍只有一条归属记录
     And fenceItemRowsWritten 为 0，托盘不提示
 
+  Scenario: 已在普通方框里的文件保持不动
+    Given 桌面文件 b.txt 已归属于普通方框「工作」，并有自己的 sort_order
+    When 启动 DeskBox 并完成启动对账
+    Then b.txt 仍在方框「工作」里，位置和 sort_order 不变
+    And b.txt 没有被加进暂存方框
+
   Scenario: Explorer 重启后重新对账不重复
     Given DeskBox 正在运行，桌面文件已全部收进方框
     When Explorer 重启并广播 TaskbarCreated
