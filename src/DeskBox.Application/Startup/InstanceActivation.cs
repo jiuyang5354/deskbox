@@ -20,3 +20,24 @@ public sealed class InstanceActivation(IUiDispatcher dispatcher, IWindowActivato
 {
     public void OnSignal(object? sender, EventArgs e) => dispatcher.Post(activator.RestoreActivateAndBringToFront);
 }
+
+/// <summary>托盘通知（气泡，不抢焦点）。</summary>
+public interface ITrayNotifier
+{
+    void ShowNotice(string text);
+}
+
+/// <summary>
+/// 第二实例唤醒按嵌入状态区分（TDD v1.0.13 §4.5.3）：嵌入桌面时照旧恢复并置前；
+/// 兼容显示时<b>不</b>激活、不把方框带到前面（否则会盖住别的窗口），只在托盘弹一次「DeskBox 已在运行」。
+/// </summary>
+public sealed class EmbedAwareActivator(IWindowActivator inner, Func<Desktop.EmbedMode> mode, ITrayNotifier tray) : IWindowActivator
+{
+    public const string AlreadyRunning = "DeskBox 已在运行";
+
+    public void RestoreActivateAndBringToFront()
+    {
+        if (mode() == Desktop.EmbedMode.Degraded) tray.ShowNotice(AlreadyRunning);
+        else inner.RestoreActivateAndBringToFront();
+    }
+}

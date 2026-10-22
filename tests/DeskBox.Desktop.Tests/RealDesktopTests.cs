@@ -18,6 +18,13 @@ namespace DeskBox.Desktop.Tests;
 public sealed partial class RealDesktopTests
 {
     private static readonly Win32DesktopWindowing Win = new();
+    private static readonly Win32DesktopWindowTree Tree = new();
+    private static readonly NullEmbedLog Log = new();
+
+    private sealed class NullEmbedLog : IEmbedLog
+    {
+        public void EmbedAttempt(EmbedReport report) { }
+    }
 
     private sealed class Fences(params Fence[] rows) : IFenceStore
     {
@@ -53,7 +60,7 @@ public sealed partial class RealDesktopTests
 
     private static void SkipIfNoDesktop()
     {
-        var progman = Win.FindProgman();
+        var progman = Tree.FindProgman();
         Skip.If(progman == IntPtr.Zero,
             "没有交互式桌面（找不到 Progman，托管 runner 无 Explorer 桌面）。该用例需按真机清单 docs/TDD.md §4.5.4 手工验证。");
         Skip.If(Process.GetProcessesByName("explorer").Length == 0, "explorer.exe 未运行，需真机清单验证。");
@@ -76,14 +83,16 @@ public sealed partial class RealDesktopTests
         SkipIfNoDesktop();
         var boxes = new NativeBoxes();
         using var shell = new Win32ShellNotifications(SynchronizationContext.Current);
-        using var sut = new DesktopEmbedder(new NoDb(), new Fences(Box()), Win, Monitors(), boxes, shell);
+        using var sut = new DesktopEmbedder(new NoDb(), new Fences(Box()), Tree, Win, Monitors(), boxes, shell, Log);
 
         await sut.StartAsync();
 
         sut.Mode.Should().Be(EmbedMode.Embedded);
-        var worker = Win.FindWorkerW(Win.FindProgman());
-        worker.Should().NotBe(IntPtr.Zero);
-        Win.GetParent(sut.Windows.Values.Single()).Should().Be(worker);
+        // 按窗口结构重新判断：旧层级挂 WorkerW，24H2 起挂 Progman；挂上去的方框必须可见（祖先链全部可见）
+        var host = DesktopHostLocator.Locate(Tree);
+        host.Host.Should().NotBe(IntPtr.Zero);
+        Win.GetParent(sut.Windows.Values.Single()).Should().Be(host.Host);
+        for (var p = sut.Windows.Values.Single(); p != IntPtr.Zero; p = Tree.Parent(p)) Tree.IsVisible(p).Should().BeTrue();
         foreach (var h in sut.Windows.Values) DestroyWindow(h);
     });
 
@@ -94,10 +103,10 @@ public sealed partial class RealDesktopTests
         var boxes = new NativeBoxes();
         using var shell = new Win32ShellNotifications(SynchronizationContext.Current);
         var fence = Box();
-        using var sut = new DesktopEmbedder(new NoDb(), new Fences(fence), Win, Monitors(), boxes, shell);
+        using var sut = new DesktopEmbedder(new NoDb(), new Fences(fence), Tree, Win, Monitors(), boxes, shell, Log);
         await sut.StartAsync();
         sut.Mode.Should().Be(EmbedMode.Embedded);
-        var oldWorker = sut.WorkerW;
+        var oldWorker = sut.Host;
         var reattached = new TaskCompletionSource<EmbedMode>(TaskCreationOptions.RunContinuationsAsynchronously);
         sut.Attached += (_, m) => reattached.TrySetResult(m);
 
@@ -108,9 +117,9 @@ public sealed partial class RealDesktopTests
             // TaskbarCreated 在监听线程上触发 → DesktopEmbedder 重新挂接
             (await reattached.Task.WaitAsync(TimeSpan.FromSeconds(60))).Should().Be(EmbedMode.Embedded);
 
-            var newWorker = Win.FindWorkerW(Win.FindProgman());
+            var newWorker = DesktopHostLocator.Locate(Tree).Host;
             newWorker.Should().NotBe(IntPtr.Zero).And.NotBe(oldWorker);
-            sut.WorkerW.Should().Be(newWorker);
+            sut.Host.Should().Be(newWorker);
             Win.GetParent(sut.Windows[fence.Id]).Should().Be(newWorker, "必须挂到新的 WorkerW，而不只是收到了消息");
         }
         finally

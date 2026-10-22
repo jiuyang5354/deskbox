@@ -6,53 +6,106 @@ using NSubstitute;
 
 namespace DeskBox.Domain.Tests;
 
-/// <summary>可编程的假 Win32 桌面：Explorer 可以"死掉""重启"，旧 WorkerW 的子窗口随之销毁。</summary>
-internal sealed class FakeDesktop : IDesktopWindowing, IShellNotifications, IBoxWindows
+/// <summary>Explorer 运行时的窗口层级。</summary>
+public enum FakeLayering
 {
+    /// <summary>旧层级：0x052C 后出现两个顶层 WorkerW，前一个持有 SHELLDLL_DefView，后一个是壁纸层。</summary>
+    Legacy,
+    /// <summary>Win11 24H2 起：WorkerW 是 Progman 的子窗口（SHELLDLL_DefView 也在 Progman 下）。</summary>
+    ProgmanChild,
+    /// <summary>旧层级的结构，但图标层之后的那个 WorkerW 是隐藏的（挂上去就看不见）。</summary>
+    HiddenWorkerOnly,
+}
+
+/// <summary>
+/// 可编程的假 Win32 桌面窗口树：有父子关系、类名、可见性和顶层 Z 序；Explorer 可以"死掉""重启"，其窗口的子窗口随之销毁。
+/// 同时实现 <see cref="IDesktopWindowTree"/>（查找）和 <see cref="IDesktopWindowing"/>（操作），两者共享同一棵树。
+/// </summary>
+internal sealed class FakeDesktop : IDesktopWindowTree, IDesktopWindowing, IShellNotifications, IBoxWindows
+{
+    private sealed class Node(string cls, bool visible)
+    {
+        public string Class { get; } = cls;
+        public bool Visible { get; set; } = visible;
+        public IntPtr Parent { get; set; }
+    }
+
     private long _next = 100;
-    private readonly HashSet<IntPtr> _alive = [];
-    private readonly Dictionary<IntPtr, IntPtr> _parent = [];
+    private readonly Dictionary<IntPtr, Node> _nodes = [];
+    private readonly List<IntPtr> _zOrder = []; // 顶层窗口，从上到下
     private readonly Dictionary<Guid, IntPtr> _boxes = [];
+    private readonly HashSet<IntPtr> _pinned = [];
 
     public IntPtr Progman { get; private set; }
+    /// <summary>当前布局下"正确"的挂载点：旧层级为壁纸层 WorkerW，新层级为 Progman。</summary>
     public IntPtr Worker { get; private set; }
+    public IntPtr DefView { get; private set; }
+    public FakeLayering Layering { get; set; } = FakeLayering.Legacy;
     public bool WorkerSpawns { get; set; } = true;
     public bool SetParentFails { get; set; }
     public int FindProgmanCalls { get; private set; }
     public int SpawnCalls { get; private set; }
     public int Created { get; private set; }
     public Dictionary<IntPtr, ScreenRect> Bounds { get; } = [];
-    public HashSet<IntPtr> BottomMost { get; } = [];
+    /// <summary>处于兼容显示（钉在最底）的方框。</summary>
+    public IReadOnlyCollection<IntPtr> BottomMost => _pinned;
+    public OsVersionInfo OsVersion { get; } = new("26200.9457", "25H2");
 
     public event EventHandler? TaskbarCreated;
 
-    private IntPtr New()
+    private IntPtr New(string cls, IntPtr parent, bool visible = true)
     {
         var h = (IntPtr)_next++;
-        _alive.Add(h);
+        _nodes[h] = new Node(cls, visible) { Parent = parent };
+        if (parent == IntPtr.Zero) _zOrder.Insert(0, h);
         return h;
     }
 
     /// <summary>Explorer 启动：新的 Progman（WorkerW 要等 0x052C 才生成）；然后广播 TaskbarCreated。</summary>
     public void StartExplorer(bool broadcast = true)
     {
-        Progman = New();
+        Progman = New("Progman", IntPtr.Zero);
+        _zOrder.Remove(Progman);
+        _zOrder.Add(Progman); // Progman 在顶层 Z 序最底
+        DefView = New("SHELLDLL_DefView", Progman);
         Worker = IntPtr.Zero;
-        if (broadcast) TaskbarCreated?.Invoke(this, EventArgs.Empty);
+        if (broadcast) Broadcast();
     }
 
-    /// <summary>Explorer 退出：Progman / WorkerW 及其所有子窗口销毁。</summary>
+    /// <summary>Explorer 退出：Explorer 的所有窗口及其子窗口（包括挂上去的方框）销毁。</summary>
     public void KillExplorer()
     {
-        foreach (var (child, parent) in _parent.ToList())
-            if (parent == Worker) { _alive.Remove(child); _parent.Remove(child); }
-        _alive.Remove(Progman);
-        _alive.Remove(Worker);
-        (Progman, Worker) = (IntPtr.Zero, IntPtr.Zero);
+        var explorer = _nodes.Where(n => n.Value.Class is "Progman" or "WorkerW" or "SHELLDLL_DefView").Select(n => n.Key).ToList();
+        bool Dies(IntPtr h) => explorer.Contains(h) || (_nodes[h].Parent != IntPtr.Zero && _nodes.ContainsKey(_nodes[h].Parent) && Dies(_nodes[h].Parent));
+        foreach (var h in _nodes.Keys.Where(Dies).ToList()) { _nodes.Remove(h); _zOrder.Remove(h); _pinned.Remove(h); }
+        (Progman, Worker, DefView) = (IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
     }
 
     public void Broadcast() => TaskbarCreated?.Invoke(this, EventArgs.Empty);
 
+    /// <summary>用户点了方框（或别的程序想把它带到前面）：窗口管理器发 WM_WINDOWPOSCHANGING(HWND_TOP)，窗口过程按 <see cref="FallbackZOrder"/> 处理。</summary>
+    public void UserActivates(IntPtr hwnd)
+    {
+        if (_nodes[hwnd].Parent != IntPtr.Zero) return;
+        var (after, _) = FallbackZOrder.Adjust(_pinned.Contains(hwnd), IntPtr.Zero /* HWND_TOP */, 0);
+        _zOrder.Remove(hwnd);
+        if (after == FallbackZOrder.HwndBottom) _zOrder.Add(hwnd);
+        else _zOrder.Insert(0, hwnd);
+    }
+
+    /// <summary>顶层窗口里，hwnd 是否在除 Progman 以外所有窗口的下面（不会盖住别的窗口）。</summary>
+    public bool IsBelowAllOtherWindows(IntPtr hwnd)
+    {
+        var i = _zOrder.IndexOf(hwnd);
+        return i >= 0 && _zOrder.Skip(i + 1).All(h => h == Progman || _pinned.Contains(h) || _nodes[h].Class == "WorkerW");
+    }
+
+    /// <summary>新开一个普通应用窗口（放在最上面）。</summary>
+    public IntPtr OpenAppWindow() => New("Notepad", IntPtr.Zero);
+
+    public void SetVisible(IntPtr hwnd, bool visible) => _nodes[hwnd].Visible = visible;
+
+    // ---- IDesktopWindowTree ----
     public IntPtr FindProgman()
     {
         FindProgmanCalls++;
@@ -62,39 +115,130 @@ internal sealed class FakeDesktop : IDesktopWindowing, IShellNotifications, IBox
     public bool SpawnWorkerW(IntPtr progman)
     {
         SpawnCalls++;
-        if (progman != Progman || !_alive.Contains(progman)) return false;
-        if (WorkerSpawns && Worker == IntPtr.Zero) Worker = New();
+        if (progman != Progman || !_nodes.ContainsKey(progman)) return false;
+        if (!WorkerSpawns || Worker != IntPtr.Zero) return true;
+        switch (Layering)
+        {
+            case FakeLayering.ProgmanChild:
+                New("WorkerW", Progman);
+                Worker = Progman;
+                break;
+            default:
+                // 旧层级：DefView 移进新建的顶层 WorkerW，其后再跟一个壁纸层 WorkerW
+                var wallpaper = New("WorkerW", IntPtr.Zero, visible: Layering != FakeLayering.HiddenWorkerOnly);
+                var icons = New("WorkerW", IntPtr.Zero);
+                _nodes[DefView].Parent = icons;
+                Worker = wallpaper;
+                break;
+        }
         return true;
     }
 
-    public IntPtr FindWorkerW(IntPtr progman) => progman == Progman ? Worker : IntPtr.Zero;
-    public bool IsWindow(IntPtr hwnd) => _alive.Contains(hwnd);
-    public IntPtr GetParent(IntPtr hwnd) => _parent.GetValueOrDefault(hwnd);
+    public IReadOnlyList<IntPtr> TopLevelWindows() => _zOrder.ToList();
+
+    public IntPtr FindChild(IntPtr parent, IntPtr after, string className)
+    {
+        IEnumerable<IntPtr> candidates = parent == IntPtr.Zero
+            ? _zOrder
+            : _nodes.Where(n => n.Value.Parent == parent).Select(n => n.Key).OrderBy(h => (long)h);
+        if (after != IntPtr.Zero) candidates = candidates.SkipWhile(h => h != after).Skip(1);
+        return candidates.FirstOrDefault(h => _nodes[h].Class == className);
+    }
+
+    public string ClassName(IntPtr hwnd) => _nodes.TryGetValue(hwnd, out var n) ? n.Class : "?";
+    public bool IsVisible(IntPtr hwnd) => _nodes.TryGetValue(hwnd, out var n) && n.Visible;
+    public IntPtr Parent(IntPtr hwnd) => _nodes.TryGetValue(hwnd, out var n) ? n.Parent : IntPtr.Zero;
+
+    public IntPtr Root(IntPtr hwnd)
+    {
+        var h = hwnd;
+        while (Parent(h) != IntPtr.Zero) h = Parent(h);
+        return h;
+    }
+
+    public bool IsWindow(IntPtr hwnd) => _nodes.ContainsKey(hwnd);
+
+    /// <summary>模拟坐标换算出错：挂到父窗口下的窗口实际位置比请求的偏移这么多像素。</summary>
+    public int ConversionErrorPx { get; set; }
+
+    public ScreenRect WindowRect(IntPtr hwnd)
+    {
+        var r = Bounds.GetValueOrDefault(hwnd);
+        return Parent(hwnd) != IntPtr.Zero ? r with { X = r.X + ConversionErrorPx } : r;
+    }
+
+    /// <summary>24H2 上残留的隐藏顶层 WorkerW，Z 序紧跟在 Progman（持有 SHELLDLL_DefView）之后。</summary>
+    public IntPtr AddStaleTopLevelWorkerAfterProgman()
+    {
+        var h = New("WorkerW", IntPtr.Zero, visible: false);
+        _zOrder.Remove(h);
+        _zOrder.Insert(_zOrder.IndexOf(Progman) + 1, h);
+        return h;
+    }
+
+    /// <summary>模拟 WpfWindowActivator：恢复、激活、Topmost 切换——直接置顶，不经过兼容显示的 Z 序处理。</summary>
+    public int ForcedToFront { get; private set; }
+
+    public void ForceToFront(IntPtr hwnd)
+    {
+        ForcedToFront++;
+        _zOrder.Remove(hwnd);
+        _zOrder.Insert(0, hwnd);
+    }
+
+    // ---- IDesktopWindowing ----
+    public IntPtr GetParent(IntPtr hwnd) => Parent(hwnd);
 
     public bool SetParent(IntPtr child, IntPtr parent)
     {
-        if (!_alive.Contains(child)) throw new InvalidOperationException("dead child " + child);
-        if (parent == IntPtr.Zero) { _parent.Remove(child); return true; }
-        if (SetParentFails || !_alive.Contains(parent)) return false;
-        _parent[child] = parent;
-        BottomMost.Remove(child);
+        if (!_nodes.ContainsKey(child)) throw new InvalidOperationException("dead child " + child);
+        if (parent == IntPtr.Zero)
+        {
+            if (_nodes[child].Parent != IntPtr.Zero) _zOrder.Insert(0, child);
+            _nodes[child].Parent = IntPtr.Zero;
+            return true;
+        }
+        if (SetParentFails || !_nodes.ContainsKey(parent)) return false;
+        _nodes[child].Parent = parent;
+        _zOrder.Remove(child);
         return true;
     }
 
-    public void SetBottomMost(IntPtr hwnd) => BottomMost.Add(hwnd);
+    public void PinToBottom(IntPtr hwnd)
+    {
+        _pinned.Add(hwnd);
+        _zOrder.Remove(hwnd);
+        _zOrder.Add(hwnd);
+    }
+
+    public void Unpin(IntPtr hwnd) => _pinned.Remove(hwnd);
+
+    /// <summary>对这些窗口 SetBounds 抛异常；FailWhileEmbeddedOnly 为 true 时只在挂到父窗口后才抛（模拟 SetWindowPos 对子窗口失败）。</summary>
+    public HashSet<IntPtr> SetBoundsFailsFor { get; } = [];
+    public bool FailWhileEmbeddedOnly { get; set; } = true;
 
     public void SetBounds(IntPtr hwnd, ScreenRect screen)
     {
-        if (!_alive.Contains(hwnd)) throw new InvalidOperationException("dead window");
+        if (!_nodes.ContainsKey(hwnd)) throw new InvalidOperationException("dead window");
+        if (SetBoundsFailsFor.Contains(hwnd) && (!FailWhileEmbeddedOnly || _nodes[hwnd].Parent != IntPtr.Zero))
+            throw new InvalidOperationException("SetWindowPos 失败（Win32 5）");
         Bounds[hwnd] = screen;
     }
 
+    // ---- IBoxWindows ----
     public IntPtr Ensure(Fence fence)
     {
-        if (_boxes.TryGetValue(fence.Id, out var h) && _alive.Contains(h)) return h;
+        if (_boxes.TryGetValue(fence.Id, out var h) && _nodes.ContainsKey(h)) return h;
         Created++;
-        return _boxes[fence.Id] = New();
+        return _boxes[fence.Id] = New("DeskBoxFence", IntPtr.Zero);
     }
+}
+
+/// <summary>记录嵌入日志。</summary>
+internal sealed class RecordingEmbedLog : IEmbedLog
+{
+    public List<EmbedReport> Reports { get; } = [];
+    public void EmbedAttempt(EmbedReport report) => Reports.Add(report);
 }
 
 internal sealed class InMemoryFences : IFenceStore
@@ -142,7 +286,9 @@ public class DesktopEmbedTests
         _fences.Rows[_b.Id] = _b;
     }
 
-    private DesktopEmbedder Sut() => new(new FakeDb(), _fences, _desk, _monitors, _desk, _desk);
+    private readonly RecordingEmbedLog _log = new();
+
+    private DesktopEmbedder Sut() => new(new FakeDb(), _fences, _desk, _desk, _monitors, _desk, _desk, _log);
 
     [Fact]
     public async Task Embeds_every_box_under_the_spawned_worker_at_db_positions()
@@ -153,7 +299,7 @@ public class DesktopEmbedTests
         await sut.StartAsync();
 
         sut.Mode.Should().Be(EmbedMode.Embedded);
-        sut.WorkerW.Should().Be(_desk.Worker).And.NotBe(IntPtr.Zero);
+        sut.Host.Should().Be(_desk.Worker).And.NotBe(IntPtr.Zero);
         _desk.SpawnCalls.Should().Be(1, "先发 0x052C 再找 WorkerW");
         foreach (var h in sut.Windows.Values) _desk.GetParent(h).Should().Be(_desk.Worker);
         _desk.Bounds[sut.Windows[_a.Id]].Should().Be(new ScreenRect(100, 50, 300, 200));
@@ -171,7 +317,7 @@ public class DesktopEmbedTests
         await sut.StartAsync();
 
         sut.Mode.Should().Be(EmbedMode.Degraded);
-        sut.WorkerW.Should().Be(IntPtr.Zero);
+        sut.Host.Should().Be(IntPtr.Zero);
         sut.Windows.Values.Should().HaveCount(2).And.OnlyContain(h => _desk.BottomMost.Contains(h) && _desk.Bounds.ContainsKey(h),
             "降级为普通置底窗口，方框照常显示并放到数据库位置");
         _desk.FindProgmanCalls.Should().Be(1, "没有忙重试 / 轮询");
@@ -216,7 +362,7 @@ public class DesktopEmbedTests
         _desk.StartExplorer(broadcast: false);
         using var sut = Sut();
         await sut.StartAsync();
-        var oldWorker = sut.WorkerW;
+        var oldWorker = sut.Host;
         var oldA = sut.Windows[_a.Id];
         _desk.Bounds[oldA] = new ScreenRect(999, 999, 500, 500); // 重启前窗口被拖到别处但没保存
 
@@ -226,7 +372,7 @@ public class DesktopEmbedTests
         _desk.StartExplorer();
 
         sut.Mode.Should().Be(EmbedMode.Embedded);
-        sut.WorkerW.Should().Be(_desk.Worker).And.NotBe(oldWorker);
+        sut.Host.Should().Be(_desk.Worker).And.NotBe(oldWorker);
         var newA = sut.Windows[_a.Id];
         newA.Should().NotBe(oldA);
         _desk.GetParent(newA).Should().Be(_desk.Worker, "挂到新的 WorkerW，而不只是收到了消息");
@@ -257,20 +403,22 @@ public class DesktopEmbedTests
         _desk.FindProgmanCalls.Should().Be(before, "Dispose 后不再响应");
         await FluentActions.Awaiting(() => sut.AttachAllAsync()).Should().ThrowAsync<ObjectDisposedException>();
         await FluentActions.Awaiting(() => sut.StartAsync()).Should().ThrowAsync<ObjectDisposedException>();
-        new DesktopEmbedder(new FakeDb(), _fences, _desk, _monitors, _desk, _desk).Dispose();
+        new DesktopEmbedder(new FakeDb(), _fences, _desk, _desk, _monitors, _desk, _desk, _log).Dispose();
     }
 
     [Fact]
     public void Constructor_guards()
     {
         var db = new FakeDb();
-        FluentActions.Invoking(() => new DesktopEmbedder(null!, _fences, _desk, _monitors, _desk, _desk)).Should().Throw<ArgumentNullException>();
-        FluentActions.Invoking(() => new DesktopEmbedder(db, null!, _desk, _monitors, _desk, _desk)).Should().Throw<ArgumentNullException>();
-        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, null!, _monitors, _desk, _desk)).Should().Throw<ArgumentNullException>();
-        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, null!, _desk, _desk)).Should().Throw<ArgumentNullException>();
-        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, _monitors, null!, _desk)).Should().Throw<ArgumentNullException>();
-        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, _monitors, _desk, null!)).Should().Throw<ArgumentNullException>();
-        new DesktopEmbedder(db, _fences, _desk, _monitors, _desk, _desk).Mode.Should().Be(EmbedMode.None);
+        FluentActions.Invoking(() => new DesktopEmbedder(null!, _fences, _desk, _desk, _monitors, _desk, _desk, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, null!, _desk, _desk, _monitors, _desk, _desk, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, null!, _desk, _monitors, _desk, _desk, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, null!, _monitors, _desk, _desk, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, _desk, null!, _desk, _desk, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, _desk, _monitors, null!, _desk, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, _desk, _monitors, _desk, null!, _log)).Should().Throw<ArgumentNullException>();
+        FluentActions.Invoking(() => new DesktopEmbedder(db, _fences, _desk, _desk, _monitors, _desk, _desk, null!)).Should().Throw<ArgumentNullException>();
+        new DesktopEmbedder(db, _fences, _desk, _desk, _monitors, _desk, _desk, _log).Mode.Should().Be(EmbedMode.None);
     }
 }
 

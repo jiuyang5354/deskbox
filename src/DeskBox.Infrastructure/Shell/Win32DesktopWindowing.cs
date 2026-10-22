@@ -1,20 +1,18 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using DeskBox.Application.Desktop;
 using DeskBox.Application.Ports;
 using DeskBox.Domain.Geometry;
+using Microsoft.Win32;
 using static DeskBox.Infrastructure.Shell.NativeMethods;
 
 namespace DeskBox.Infrastructure.Shell;
 
-/// <summary>
-/// 桌面层 Win32 实现（TDD §4.5.1）：0x052C → WorkerW → SetParent。不注入 DLL、不装钩子。
-/// 不缓存任何句柄：每次调用都重新查找。
-/// </summary>
+/// <summary>桌面窗口树的 Win32 实现（TDD v1.0.13 §4.5.1）。不缓存任何句柄：每次调用都重新查找。</summary>
 [SupportedOSPlatform("windows")]
-public sealed class Win32DesktopWindowing : IDesktopWindowing
+public sealed class Win32DesktopWindowTree : IDesktopWindowTree
 {
     private const uint SpawnTimeoutMs = 1000;
-    private const uint GaParent = 1;
 
     public IntPtr FindProgman() => FindWindow("Progman", null);
 
@@ -26,19 +24,75 @@ public sealed class Win32DesktopWindowing : IDesktopWindowing
         return a || b;
     }
 
-    public IntPtr FindWorkerW(IntPtr progman)
+    public IReadOnlyList<IntPtr> TopLevelWindows()
     {
-        // 经典布局：持有 SHELLDLL_DefView 的顶层窗口之后的那个 WorkerW
-        var worker = IntPtr.Zero;
-        EnumWindows((top, _) =>
+        var list = new List<IntPtr>();
+        EnumWindows((h, _) => { list.Add(h); return true; }, IntPtr.Zero);
+        return list;
+    }
+
+    public IntPtr FindChild(IntPtr parent, IntPtr after, string className) => FindWindowEx(parent, after, className, null);
+
+    public string ClassName(IntPtr hwnd)
+    {
+        var buf = new char[256];
+        var n = GetClassName(hwnd, buf, buf.Length);
+        return n > 0 ? new string(buf, 0, n) : "?";
+    }
+
+    public bool IsVisible(IntPtr hwnd) => (GetWindowLongPtr(hwnd, GwlStyle).ToInt64() & WsVisible) != 0;
+
+    public IntPtr Parent(IntPtr hwnd) => GetAncestor(hwnd, GaParent) is var p && p == GetDesktopWindow() ? IntPtr.Zero : p;
+
+    public IntPtr Root(IntPtr hwnd) => GetAncestor(hwnd, GaRoot);
+
+    public ScreenRect WindowRect(IntPtr hwnd) =>
+        GetWindowRect(hwnd, out var r) ? new ScreenRect(r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top) : default;
+
+    public bool IsWindow(IntPtr hwnd) => NativeMethods.IsWindow(hwnd);
+
+    public OsVersionInfo OsVersion { get; } = ReadOsVersion();
+
+    /// <summary>只读 CurrentBuild / UBR / DisplayVersion 记日志；ProductName 在 Win11 上仍写 "Windows 10"，从不读取。</summary>
+    private static OsVersionInfo ReadOsVersion()
+    {
+        try
         {
-            if (FindWindowEx(top, IntPtr.Zero, "SHELLDLL_DefView", null) == IntPtr.Zero) return true;
-            worker = FindWindowEx(IntPtr.Zero, top, "WorkerW", null);
-            return false;
-        }, IntPtr.Zero);
-        // Win11 24H2 起：WorkerW 是 Progman 的子窗口
-        if (worker == IntPtr.Zero && progman != IntPtr.Zero) worker = FindWindowEx(progman, IntPtr.Zero, "WorkerW", null);
-        return worker;
+            using var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+            var build = key?.GetValue("CurrentBuild") as string ?? Environment.OSVersion.Version.Build.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var ubr = key?.GetValue("UBR") is int u ? "." + u.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+            return new(build + ubr, key?.GetValue("DisplayVersion") as string ?? "unknown");
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or System.IO.IOException or UnauthorizedAccessException)
+        {
+            return new(Environment.OSVersion.Version.ToString(), "unknown");
+        }
+    }
+}
+
+/// <summary>
+/// 方框窗口的 Win32 操作（TDD v1.0.13 §4.5）。不注入 DLL、不装钩子。
+/// 兼容显示的方框记在 <see cref="IsPinned"/> 里，窗口过程在 WM_WINDOWPOSCHANGING 中调用 <see cref="FilterWindowPosChanging"/> 把它钉在最底。
+/// </summary>
+[SupportedOSPlatform("windows")]
+public sealed class Win32DesktopWindowing : IDesktopWindowing
+{
+    /// <summary>进程内兼容显示窗口登记表；WM_NCDESTROY 时移除。</summary>
+    public static PinnedWindows Pinned { get; } = new();
+
+    /// <summary>
+    /// 方框窗口过程里对每条消息调用：WM_NCDESTROY 移除登记；WM_WINDOWPOSCHANGING（lParam 指向 WINDOWPOS）时，
+    /// 被钉住的窗口任何改 Z 序的请求都改成 HWND_BOTTOM。
+    /// </summary>
+    public static void OnWindowMessage(IntPtr hwnd, int msg, IntPtr lParam)
+    {
+        if (!Pinned.OnMessage(hwnd, msg) || lParam == IntPtr.Zero) return;
+        var pos = Marshal.PtrToStructure<WindowPos>(lParam);
+        var (after, flags) = FallbackZOrder.Adjust(true, pos.InsertAfter, pos.Flags);
+        if (after == pos.InsertAfter && flags == pos.Flags) return;
+        pos.InsertAfter = after;
+        pos.Flags = flags;
+        Marshal.StructureToPtr(pos, lParam, false);
     }
 
     bool IDesktopWindowing.IsWindow(IntPtr hwnd) => NativeMethods.IsWindow(hwnd);
@@ -46,22 +100,49 @@ public sealed class Win32DesktopWindowing : IDesktopWindowing
     /// <summary>真正的父窗口；顶层窗口（父为桌面根窗口）返回 Zero。</summary>
     public IntPtr GetParent(IntPtr hwnd) => GetAncestor(hwnd, GaParent) is var p && p == GetDesktopWindow() ? IntPtr.Zero : p;
 
-    bool IDesktopWindowing.SetParent(IntPtr child, IntPtr parent)
+    public bool SetParent(IntPtr child, IntPtr parent)
     {
+        var style = GetWindowLongPtr(child, GwlStyle).ToInt64();
+        // 先改样式再 SetParent（MSDN：子窗口须带 WS_CHILD；还原顶层时去掉 WS_CHILD）
+        var wanted = parent == IntPtr.Zero ? (style & ~WsChild) | WsPopup : (style & ~WsPopup) | WsChild;
+        if (wanted != style) SetWindowLongPtr(child, GwlStyle, new IntPtr(wanted));
         NativeMethods.SetParent(child, parent);
         // SetParent 的返回值是旧父窗口（可能本来就是 Zero），以结果为准
-        return parent == IntPtr.Zero ? GetParent(child) == IntPtr.Zero : GetAncestor(child, GaParent) == parent;
+        var ok = parent == IntPtr.Zero ? GetParent(child) == IntPtr.Zero : GetAncestor(child, GaParent) == parent;
+        if (ok && parent != IntPtr.Zero)
+            SetWindowPos(child, HwndTop, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpFrameChanged | SwpShowWindow); // 子窗口最上面：SHELLDLL_DefView 之上
+        else if (!ok && wanted != style)
+            SetWindowLongPtr(child, GwlStyle, new IntPtr(style));
+        return ok;
     }
 
-    public void SetBottomMost(IntPtr hwnd) =>
-        SetWindowPos(hwnd, HwndBottom, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+    public void PinToBottom(IntPtr hwnd)
+    {
+        var ex = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
+        if ((ex & WsExNoActivate) == 0) SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(ex | WsExNoActivate));
+        Pinned.Pin(hwnd);
+        SetWindowPos(hwnd, HwndBottom, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
+    }
+
+    public void Unpin(IntPtr hwnd)
+    {
+        if (!Pinned.Unpin(hwnd)) return;
+        var ex = GetWindowLongPtr(hwnd, GwlExStyle).ToInt64();
+        SetWindowLongPtr(hwnd, GwlExStyle, new IntPtr(ex & ~WsExNoActivate));
+    }
 
     public void SetBounds(IntPtr hwnd, ScreenRect screen)
     {
-        var p = new Point { X = screen.X, Y = screen.Y };
+        var target = screen;
         var parent = GetParent(hwnd);
-        if (parent != IntPtr.Zero) MapWindowPoints(IntPtr.Zero, parent, ref p, 1); // 屏幕 → 父窗口客户区
-        if (!SetWindowPos(hwnd, IntPtr.Zero, p.X, p.Y, screen.Width, screen.Height, SwpNoZOrder | SwpNoActivate))
+        if (parent != IntPtr.Zero)
+        {
+            // 屏幕 → 父窗口客户区：Progman 覆盖整个虚拟屏幕，客户区原点可能为负
+            var origin = new Point();
+            ClientToScreen(parent, ref origin);
+            target = screen.RelativeTo(origin.X, origin.Y);
+        }
+        if (!SetWindowPos(hwnd, IntPtr.Zero, target.X, target.Y, target.Width, target.Height, SwpNoZOrder | SwpNoActivate))
             throw new InvalidOperationException($"SetWindowPos 失败（Win32 {Marshal.GetLastPInvokeError()}）");
     }
 }

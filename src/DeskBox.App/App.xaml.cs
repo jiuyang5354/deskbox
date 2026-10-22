@@ -7,6 +7,7 @@ using DeskBox.Application.Files;
 using DeskBox.Application.Ports;
 using DeskBox.Application.Startup;
 using DeskBox.Infrastructure.Files;
+using DeskBox.Infrastructure.Logging;
 using DeskBox.Infrastructure.Shell;
 using DeskBox.Infrastructure.Sqlite;
 using DeskBox.Infrastructure.Startup;
@@ -39,12 +40,16 @@ public partial class App : System.Windows.Application
             var vaultDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "DeskBox", "Vault");
             Directory.CreateDirectory(vaultDir);
             var dbPath = Path.Combine(dataDir, "deskbox.db");
+            // 落盘日志：%LocalAppData%\DeskBox\logs，5MB 滚动保留 3 份；现有 Trace 输出一并写入（TDD v1.0.13 §6）
+            // 只在拿到单实例锁之后打开（StartupSequence 的 instanceAcquired 回调），第二实例不写 deskbox.log
+            var fileLog = new RollingFileLog(Path.Combine(dataDir, "logs"));
             var db = new SqliteUnitOfWorkFactory(dbPath);
             var journal = new SqliteJournal();
             var log = new TraceRecoveryLog();
             var recovery = new JournalRecovery(db, journal, new WindowsFileIdentity(), new VaultDirectoryIndex(vaultDir),
                 new SqliteVaultRecordStore(), new SqliteLostFileNoticeStore(), log, TimeProvider.System);
             var shell = Own(new Win32ShellNotifications(uiContext));
+            var tray = Own(new Win32TrayIcon(shell));
             var windowing = new Win32DesktopWindowing();
             var monitors = Own(new Win32MonitorService(shell));
             var fenceStore = new SqliteFenceStore();
@@ -55,16 +60,33 @@ public partial class App : System.Windows.Application
             var commands = new FenceCommandHandler(db, fenceStore, itemStore, monitors, new JournaledVaultMover(journaled, vaultDir), Mode,
                 new TraceFenceLog());
             var ui = new FenceUi(windowing, monitors, commands, new FenceBoard(db, fenceStore, itemStore), Mode);
-            var embedder = Own(new DesktopEmbedder(db, fenceStore, windowing, monitors, ui, shell));
-            embedder.Attached += async (_, _) => await RefreshUiAsync(ui);
+            var embedder = Own(new DesktopEmbedder(db, fenceStore, new Win32DesktopWindowTree(), windowing, monitors, ui, shell, fileLog));
+            embedder.Attached += async (_, mode) =>
+            {
+                tray.Show(mode); // 兼容显示 ↔ 重新嵌入成功时恢复正常提示
+                await RefreshUiAsync(ui);
+            };
+            embedder.AttachFailed += (_, ex) =>
+            {
+                tray.Show(EmbedMode.Degraded);
+                fileLog.Error($"EmbedFailed {ex}");
+            };
             // 第二实例唤醒：激活信号在线程池到达，置前在界面线程执行（TDD §4.7 第 6 条）
-            instance.Activated += new InstanceActivation(new WpfUiDispatcher(Dispatcher), new WpfWindowActivator(() => ui.Windows)).OnSignal;
+            // 兼容显示时第二实例不激活、不置前方框，只弹托盘气泡（TDD v1.0.13 §4.5.3）
+            instance.Activated += new InstanceActivation(new WpfUiDispatcher(Dispatcher),
+                new EmbedAwareActivator(new WpfWindowActivator(() => ui.Windows), () => embedder.Mode, tray)).OnSignal;
             var desktop = FileMoverFactory.CreateDesktopEnumerator();
             if (desktop is IDisposable d) Own(d);
 
             var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath, new TraceMigrationLog()),
                 new StagingFenceSelfCheck(db, fenceStore, monitors, new TraceStagingLog()), recovery, desktop, embedder,
-                new MessageBoxNotifier(), Mode);
+                new MessageBoxNotifier(), Mode, fileLog, () =>
+                {
+                    fileLog.Open();
+                    Trace.Listeners.Add(new RollingFileTraceListener(fileLog));
+                    Trace.AutoFlush = true;
+                    fileLog.Info($"DeskBox 启动 version={typeof(App).Assembly.GetName().Version} pid={Environment.ProcessId}");
+                });
             var result = await sequence.RunAsync();
             if (result.Outcome == StartupOutcome.SecondInstance) Shutdown(0);
         }
