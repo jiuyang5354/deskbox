@@ -365,6 +365,21 @@ public sealed class DesktopReconcileTests
     }
 
     [Fact]
+    public async Task Database_error_logs_reconcile_failed_and_never_shows_collected_tray_notice()
+    {
+        OnDisk(User, "a.txt", "b.txt");
+        _db.CrashAtStep = 4; // 事务已开始、写了部分行之后数据库出错 → 回滚
+
+        var r = await Sut().RunAsync();
+
+        r.Should().BeNull();
+        _log.Lines.Should().ContainSingle(l => l.StartsWith("failed:"));
+        _log.Lines.Should().NotContain(l => l.StartsWith("completed"));
+        _tray.Notices.Should().BeEmpty("对账失败时不提示「已收纳」");
+        _items.Rows.Should().BeEmpty("事务回滚，一行都没写");
+    }
+
+    [Fact]
     public async Task Cancellation_is_not_swallowed()
     {
         using var cts = new CancellationTokenSource();
