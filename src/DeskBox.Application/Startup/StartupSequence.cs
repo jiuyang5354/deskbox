@@ -17,14 +17,14 @@ public sealed record StartupResult(StartupOutcome Outcome, IReadOnlyList<Recover
     IReadOnlyList<DesktopItem> DesktopItems, string? ReadOnlyReason = null);
 
 /// <summary>
-/// 启动顺序（TDD §4.6，架构师定）：单实例锁 → 打开数据库并迁移 → 暂存方框自检 → Journal 恢复 → 枚举桌面 → 嵌入方框。
+/// 启动顺序（TDD §4.6，架构师定）：单实例锁 → 打开数据库并迁移 → 暂存方框自检 → Journal 恢复 → 枚举桌面 → 启动对账（§4.5.5）→ 嵌入方框。
 /// 自检补建失败与恢复失败一样进入只读模式（自检失败时仍执行恢复，恢复本身不移动文件；提示用第一个失败原因）。
 /// 恢复严格先于枚举和嵌入；恢复抛异常或仍有条目处理失败（保持 Pending）时进入只读模式、提示用户、跳过枚举。
 /// 锁、数据库、嵌入失败直接抛出，由启动入口决定退出。
 /// </summary>
 public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrapper database, IStagingSelfCheck staging, IStartupRecovery recovery,
     IDesktopEnumerator desktop, IStartupEmbedder embedder, IStartupNotifier notifier, OperatingMode mode, IDesktopScanLog? scanLog = null,
-    Action? instanceAcquired = null)
+    Action? instanceAcquired = null, IStartupReconcile? reconcile = null)
 {
     public async Task<StartupResult> RunAsync(CancellationToken ct = default)
     {
@@ -71,8 +71,8 @@ public sealed class StartupSequence(ISingleInstance instance, IDatabaseBootstrap
         {
             scanLog?.DesktopScanStarted();
             await foreach (var item in desktop.EnumerateAsync(ct)) items.Add(item);
-            // 启动序列目前没有把枚举结果写入 fence_item 的步骤（TDD v1.0.13 §4.5.5 调查结论），写入行数如实记 0
-            scanLog?.DesktopScanCompleted(items.Count(i => !i.IsPublicDesktop), items.Count(i => i.IsPublicDesktop), fenceItemRowsWritten: 0);
+            // 对账排在枚举之后、嵌入之前（TDD v1.0.14 §4.5.5 第 1 条）；DesktopScanCompleted 由对账写，带真实写入行数
+            if (reconcile is not null) await reconcile.RunAsync(ct);
         }
 
         await embedder.StartAsync(ct);

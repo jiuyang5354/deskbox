@@ -299,6 +299,10 @@ public sealed class SqliteFenceItemStore : IFenceItemStore
         (await SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence_item WHERE id = $id;",
             c => Sql.ListAsync(c, Map, ct), ("$id", Sql.Id(id)))).SingleOrDefault();
 
+    public Task<IReadOnlyList<FenceItem>> ListAllAsync(IUnitOfWork uow, CancellationToken ct = default) =>
+        SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence_item ORDER BY fence_id, sort_order, id;",
+            c => Sql.ListAsync(c, Map, ct));
+
     public Task<IReadOnlyList<FenceItem>> ListByFenceAsync(IUnitOfWork uow, Guid fenceId, CancellationToken ct = default) =>
         SqliteUnitOfWork.From(uow).RunAsync($"SELECT {Columns} FROM fence_item WHERE fence_id = $f ORDER BY sort_order, id;",
             c => Sql.ListAsync(c, Map, ct), ("$f", Sql.Id(fenceId)));

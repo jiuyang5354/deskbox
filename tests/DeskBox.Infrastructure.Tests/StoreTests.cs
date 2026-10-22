@@ -538,6 +538,7 @@ public sealed class FenceItemStoreTests : IAsyncLifetime
         await _t.Tx(u => _items.UpsertAsync(u, i1));
         (await _t.Tx(u => _items.ListByFenceAsync(u, _b.Id))).Single().Id.Should().Be(i1.Id);
         (await _t.Scalar<long>("SELECT COUNT(*) FROM fence_item;")).Should().Be(2, "改归属是更新，不是新增");
+        (await _t.Tx(u => _items.ListAllAsync(u))).Select(i => i.Id).Should().BeEquivalentTo(new[] { i1.Id, i2.Id }, "启动对账读全部归属行");
 
         await _t.Tx(u => _items.DeleteAsync(u, i1.Id));
         (await _t.Tx(u => _items.GetAsync(u, i1.Id))).Should().BeNull();
