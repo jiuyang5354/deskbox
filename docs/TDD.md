@@ -1,4 +1,6 @@
-# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.13
+# 《DeskBox 桌面收纳》系统技术设计方案（TDD）v1.0.14
+
+> v1.0.14：P0 启动对账——§4.5.5 改为「启动对账」，桌面文件收进暂存方框、清理磁盘上已不存在的归属，扫描不完整时一行不删（对应 PRD v1.2.8 §7B）。
 
 > v1.0.13：P0 修复——Win11 24H2/25H2 上方框看不见。§4.5.1 按窗口结构判断层级并加挂载后校验；§4.5.3 兼容显示钉在最底；§4.5.5 启动扫描日志与 fence_item 为空的调查；§6 落盘日志。
 
@@ -192,10 +194,41 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
   3. 拔掉方框所在显示器：方框完整出现在主显示器工作区；接回后回到原显示器原位置；
   4. 100% / 150% / 200% 缩放下拖动并重启 DeskBox，位置不漂移。
 
-#### 4.5.5 启动扫描日志与 fence_item 为空的调查（v1.0.13）
-- `StartupSequence` 新增可选 `IDesktopScanLog`：只读跳过枚举时写 `WARN DesktopScanSkipped reason=[…]`；执行枚举时先写 `INFO DesktopScanStarted`，结束写 `INFO DesktopScanCompleted found=N user=U public=P fenceItemRowsWritten=W`。只记数量，不记文件名和文件内容。
-- 判断方法：日志里没有 `DesktopScanStarted` 也没有 `DesktopScanSkipped` → 启动没走到枚举（之前就失败了，看 ERROR）；有 `DesktopScanSkipped` → 只读模式跳过；有 `DesktopScanCompleted … fenceItemRowsWritten=0` 且 `found>0` → 枚举执行了但没写库。
-- **调查结论**：`StartupSequence` 把枚举结果只放进 `StartupResult.DesktopItems`，`App.OnStartup` 没有使用它；代码里写 `fence_item` 的只有方框命令（改归属 / 移除 / 删方框）。也就是说**枚举执行了，但从来没有"把桌面文件放进暂存方框"的写库步骤**，所以 `fence_item` 必然为空。补这一步需要定规则（排序、公共桌面项、已在其他方框的文件、桌面文件被删时的清理、文件监听增量），本版只如实记 `fenceItemRowsWritten=0`，写库步骤另开任务，由 PM 判断优先级。
+#### 4.5.5 启动对账（v1.0.14，P0；取代 v1.0.13 的调查结论）
+> 产品规则见 PRD v1.2.8 §7B。v1.0.13 查明：`StartupSequence` 把枚举结果放进 `StartupResult.DesktopItems` 后 `App.OnStartup` 没有使用，`fence_item` 从未被写入；`fenceItemRowsWritten` 写死为 0。本版补上对账步骤。
+
+**什么时候对账**
+1. 启动顺序里，对账排在「桌面枚举」之后、「嵌入」之前。收到 `TaskbarCreated` 时也再对一次。只读模式下不对账，记 `DesktopScanSkipped`。
+2. 扫描范围是当前用户的桌面加上公共桌面，按完整路径去重，路径比较不区分大小写。带隐藏或系统属性的项不收，比如 `desktop.ini`。文件夹和快捷方式都收。仅云端文件只看属性，不去读内容。
+
+**写库规则（在一个 `BEGIN IMMEDIATE` 事务里完成）**
+3. 已经在某个方框里的路径，原样不动。file_id 无效的桌面项不收（也不会被删），每项记一条 `DesktopItemSkippedInvalidFileId` 警告，只写文件名；总数仍记在 `DesktopScanCompleted` 的 `skippedInvalid` 字段。
+4. 新路径追加到暂存方框末尾，按文件名自然排序、不区分大小写。`sort_order` 接在暂存方框当前的最大值后面。
+5. 库里有、磁盘上没有的路径：只有在扫描完整成功的前提下才删它的 `fence_item` 行，每删一行记一条 `FenceItemPruned`，只写文件名。以下三种情况一行都不删，只记一条 `DesktopScanPruneSkipped` 警告并写明原因：桌面目录读取失败、扫描中途出错、扫描到 0 项但库里有行。用户桌面和公共桌面要两个都读取成功，才算扫描完整成功。只要有一个读失败，就一行都不删，`DesktopScanPruneSkipped` 里写明是哪个桌面读失败了。
+   **删除范围收窄**：扫描完整时，也只删「父目录等于（不区分大小写）本次扫描的用户桌面或公共桌面目录、且不在扫描结果里」的行。父目录不是这两个目录的行（例如桌面被迁移后留在旧桌面路径下的行、子目录里的行）一律不动；有这样的行时每次对账只记一条 `DesktopScanPruneSkipped`，写明「N 行不在当前桌面目录下，未删除」。
+6. 整个过程不调用 `MoveFileExW`，也不碰文件本身。公共桌面的项只记归属。
+7. 暂存方框不存在时整个事务不写，记 `StagingFenceMissing`，不在这里重建，重建只由 §4.6 的启动自检负责。
+8. 重复写入靠 `fence_item` 现有的路径唯一约束兜底，重启后不会重复收。
+
+**日志和提示**
+9. `DesktopScanCompleted` 要带 `found`、`fenceItemRowsWritten`、`pruned`、`pruneSkipped` 四个字段，`fenceItemRowsWritten` 必须是真实写入的行数，不能再写死成 0。
+10. 写入行数大于 0 时，托盘提示一次「已收纳 N 个桌面文件」，N 就是 `fenceItemRowsWritten`，不弹窗。
+
+**必须有的用例**：首次启动收进 N 个文件且暂存顺序正确；自然排序 `file10`、`file2`、`File1` → `File1`、`file2`、`file10`；重启后不重复收；已在别的方框的文件不动（仍在原方框、原位置，不加进暂存方框）；磁盘删掉的文件对应行被清理；旧桌面路径下 3 行、新桌面有文件且扫描完整时 3 行全部保留；file_id 无效的每项各记一条 `DesktopItemSkippedInvalidFileId`；三种防误删情况各一个用例断言一行没删；用户桌面读失败、公共桌面成功时一行都不删，反过来公共桌面读失败、用户桌面成功时也一行都不删，两条都断言 `DesktopScanPruneSkipped` 写明是哪个桌面；暂存方框不存在时事务什么都不写；只读模式跳过对账；隐藏和系统文件不收；用户桌面和公共桌面各有一个 `a.txt` 时收两条记录；枚举结果里同一个完整路径出现两次（大小写可不同）时只收一条记录；断言整个对账过程从不调用 `MoveFileExW`。
+
+增量监听不在这一版。
+
+**后续事项**（不在本版）
+- 桌面迁移（用户桌面路径变化）后，按 file_id 把旧路径下的行迁到新路径。在此之前的副作用：旧路径的行保留，图标停留在原方框且已失效（点不开），新路径下的同一文件又被当作新文件收进暂存方框，出现「旧图标 + 暂存新图标」两份。
+- 启用 `FWF_NOICONS`（隐藏系统桌面图标）之前的前提：file_id 无效、未被收纳的文件必须在某处可见（例如暂存方框里的占位项或托盘入口），否则这些文件对用户完全不可见，不得上线。
+- 启动时桌面读两遍（`DesktopEnumerator` 与 `DesktopScanner`）合并为一次扫描，见 issue #28。
+
+**实现落点**（研发补充，不改上面的规则）
+- `DesktopScanner`（Application/Files）：经 `IKnownFolders` + `IDirectoryLister` 读两个桌面的直接子项；与 `DesktopEnumerator` 不同，读失败不吞，记成「用户桌面读取失败（IOException）」/「公共桌面扫描中途出错（…）」等原因，供第 5 条判断。桌面路径为空按读取失败处理。file_id 无效的项不收，但仍算"磁盘上存在"，不会被删；数量记在 `DesktopScanCompleted` 的附加字段 `skippedInvalid`（PRD v1.2.9 将同步此字段名）。
+- `DesktopReconciler`：一个 `InTransactionAsync`（SQLite 实现为 `BEGIN IMMEDIATE`）里完成第 3–8 条；`FenceItemPruned` / `DesktopScanPruneSkipped` / `DesktopScanCompleted` / `StagingFenceMissing` 在事务提交之后才写，回滚不留假记录。新增 `IFenceItemStore.ListAllAsync`。
+- `DesktopReconcile`（`IStartupReconcile`）：只读判断、托盘提示「已收纳 N 个桌面文件」、对账自身异常记 `DesktopReconcileFailed` 不外抛（方框照常显示，取消不吞）。`StartupSequence` 在枚举之后、嵌入之前调用；`TaskbarCreatedReconcile`（Application/Startup）订阅 `TaskbarCreated` 再对账一次并刷新界面：async void 处理器接住全部异常（含取消，取消记 `DesktopScanSkipped`、其余记 `DesktopReconcileFailed`），从不外抛；上一次未跑完时不并发；运行期间无论来多少次信号，都合并为最多一次待补跑，跑完后只补跑这一次（用例：运行中连发 3 次信号，总共只跑 2 次）。
+- 自然排序 `NaturalNameComparer`：数字段按数值比较，其余不区分大小写；完全相同时按序数比较保证稳定。
+- 用例：`DesktopReconcileTests`、`DesktopScanLogTests`、`RollingFileLogTests`、`StoreTests`（`ListAllAsync`）。
 
 ### 4.6 应用启动顺序（v1.0.10，启动接入 + 收纳库路径；v1.0.12 增加第 2.5 步）
 组合根只在 `DeskBox.App/App.xaml.cs`（`OnStartup`）：只有这里 new 基础设施对象（SQLite、Win32、WPF 窗口），其他层只依赖 Application 端口。顺序由 `Application/Startup/StartupSequence` 保证，严格为：
@@ -204,6 +237,7 @@ Domain 与 Application 层禁止使用 `System.IO.Path`，因为它的行为随�
 2.5. **暂存方框自检**（v1.0.12，PRD v1.2.6 §6）：`IStagingSelfCheck`（`StagingFenceSelfCheck`）。必须在迁移之后、Journal 恢复之前：枚举桌面会把新文件放进暂存方框，暂存方框必须先存在。在一个 `BEGIN IMMEDIATE` 事务里查 `is_staging=1` 的方框；缺失则在主显示器默认位置（DIP 24,24，280×320，标题「暂存」；无显示器时 `monitor_id='PRIMARY'`）补建一个，并写警告日志 `StagingFenceRecreated`。可重复执行：已存在就什么都不写；迁移 v4 的部分唯一索引 `ux_fence_single_staging ON fence (is_staging) WHERE is_staging = 1` 兜底保证最多一个。**补建失败 → 只读模式**，与恢复失败相同（`OperatingMode.EnterReadOnly`、提示用户、跳过枚举，`GatedFileMover` 拒绝一切移动）；自检失败时仍执行 Journal 恢复（恢复本身不移动文件），提示使用第一个失败原因。取消不被吞。迁移 v4 处理旧库重复：保留 `sort_order` 最小（同序取 `id` 最小）的暂存方框，其余降为普通方框（`is_staging=0`），方框和映射都保留。
 3. **Journal 恢复**：`IStartupRecovery`（`JournalRecovery`）处理全部 Pending。**恢复抛异常（取消除外）或仍有条目为 `Failed`（保持 Pending）→ 只读模式**：`OperatingMode.EnterReadOnly`，`IStartupNotifier` 提示用户，**跳过桌面枚举**。所有移动经 `GatedFileMover`，只读时在任何原生尝试之前抛 `ReadOnlyModeException`（`JournaledMove` 据此立即 RollBack 刚写的 Pending）。只读在本进程内不退出，重启再试。`Lost` 视为已处理，不触发只读。
 4. **枚举桌面**：仅非只读时，`IDesktopEnumerator.EnumerateAsync`。
+4.5. **启动对账**（v1.0.14）：仅非只读时，见 §4.5.5。
 5. **嵌入**：`IStartupEmbedder`（`DesktopEmbedder.StartAsync`）从数据库读方框，嵌入 WorkerW 或降级置底。只读模式下照常显示方框。
 
 **测试**（`StartupSequenceTests`，假组件记录调用顺序）：正常为 `mutex → migrate → staging → recover → enumerate → embed`，恢复严格早于枚举与嵌入；第二实例只有 `mutex → signal`；自检补建失败 → 只读、提示、无枚举、`GatedFileMover` 拒绝移动（`StagingSelfCheckTests`：删掉暂存方框后启动恰好补建一个并记警告，连续启动两次不多建；SQLite 上同样验证）；恢复异常 / 有 `Failed` 条目 → 只读、提示、无枚举；取消不被吞且不嵌入；只读时 `GatedFileMover` 不调用内部移动器。`BootstrapperTests` 覆盖建目录 + 迁移可重复。

@@ -105,14 +105,26 @@ public sealed class RollingFileLogTests : IDisposable
         log.EmbedAttempt(new EmbedReport(id, new OsVersionInfo("26200.9457", "25H2"), DesktopLayering.Legacy, "WorkerW(0x20)", "父窗口不可见：WorkerW(0x20)", EmbedPath.Fallback));
         log.DesktopScanSkipped("1 条未完成的整理记录恢复失败");
         log.DesktopScanStarted();
-        log.DesktopScanCompleted(12, 3, 0);
+        log.DesktopScanCompleted(15, 4, 2, false, 1);
+        log.FenceItemPruned("gone.txt");
+        log.DesktopScanPruneSkipped("公共桌面读取失败（IOException）");
+        log.StagingFenceMissing();
+        log.DesktopReconcileFailed("IOException hresult=0x80070020");
+        log.DesktopScanCompleted(0, 0, 0, true, 0);
+        log.DesktopItemSkippedInvalidFileId("odd.txt");
 
         var lines = File.ReadAllLines(log.CurrentPath);
         lines[0].Should().EndWith($"[INFO] Embed fence={id} os=[build 26200.9457, DisplayVersion 25H2] layering=ProgmanChild parent=[Progman(0x10)] validation=[ok] path=Embedded");
         lines[1].Should().Contain("[WARN] Embed").And.Contain("layering=Legacy").And.Contain("path=Fallback");
         lines[2].Should().EndWith("[WARN] DesktopScanSkipped reason=[1 条未完成的整理记录恢复失败]");
         lines[3].Should().EndWith("[INFO] DesktopScanStarted");
-        lines[4].Should().EndWith("[INFO] DesktopScanCompleted found=15 user=12 public=3 fenceItemRowsWritten=0");
+        lines[4].Should().EndWith("[INFO] DesktopScanCompleted found=15 fenceItemRowsWritten=4 pruned=2 pruneSkipped=false skippedInvalid=1");
+        lines[5].Should().EndWith("[INFO] FenceItemPruned name=[gone.txt]");
+        lines[6].Should().EndWith("[WARN] DesktopScanPruneSkipped reason=[公共桌面读取失败（IOException）]");
+        lines[7].Should().Contain("[ERROR] StagingFenceMissing");
+        lines[8].Should().EndWith("[ERROR] DesktopReconcileFailed IOException hresult=0x80070020");
+        lines[9].Should().EndWith("pruneSkipped=true skippedInvalid=0");
+        lines[10].Should().EndWith("[WARN] DesktopItemSkippedInvalidFileId name=[odd.txt]");
         FluentActions.Invoking(() => log.EmbedAttempt(null!)).Should().Throw<ArgumentNullException>();
     }
 

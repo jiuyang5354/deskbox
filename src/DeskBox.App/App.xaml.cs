@@ -78,6 +78,10 @@ public partial class App : System.Windows.Application
             var desktop = FileMoverFactory.CreateDesktopEnumerator();
             if (desktop is IDisposable d) Own(d);
 
+            // 启动对账：启动时一次（枚举之后、嵌入之前），收到 TaskbarCreated 时再一次（TDD v1.0.14 §4.5.5 第 1 条）
+            var reconcile = new DesktopReconcile(FileMoverFactory.CreateDesktopScanner(),
+                new DesktopReconciler(db, fenceStore, itemStore, fileLog), Mode, fileLog, tray);
+            Own(new TaskbarCreatedReconcile(shell, reconcile, () => RefreshUiAsync(ui), fileLog));
             var sequence = new StartupSequence(instance, new SqliteDatabaseBootstrapper(db, dbPath, new TraceMigrationLog()),
                 new StagingFenceSelfCheck(db, fenceStore, monitors, new TraceStagingLog()), recovery, desktop, embedder,
                 new MessageBoxNotifier(), Mode, fileLog, () =>
@@ -86,7 +90,7 @@ public partial class App : System.Windows.Application
                     Trace.Listeners.Add(new RollingFileTraceListener(fileLog));
                     Trace.AutoFlush = true;
                     fileLog.Info($"DeskBox 启动 version={typeof(App).Assembly.GetName().Version} pid={Environment.ProcessId}");
-                });
+                }, reconcile);
             var result = await sequence.RunAsync();
             if (result.Outcome == StartupOutcome.SecondInstance) Shutdown(0);
         }

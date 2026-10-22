@@ -109,9 +109,19 @@ public sealed class RollingFileLog : IEmbedLog, IDesktopScanLog
 
     public void DesktopScanStarted() => Info("DesktopScanStarted");
 
-    public void DesktopScanCompleted(int userDesktopItems, int publicDesktopItems, int fenceItemRowsWritten) =>
+    public void DesktopScanCompleted(int found, int fenceItemRowsWritten, int pruned, bool pruneSkipped, int skippedInvalid) =>
         Info(string.Create(CultureInfo.InvariantCulture,
-            $"DesktopScanCompleted found={userDesktopItems + publicDesktopItems} user={userDesktopItems} public={publicDesktopItems} fenceItemRowsWritten={fenceItemRowsWritten}"));
+            $"DesktopScanCompleted found={found} fenceItemRowsWritten={fenceItemRowsWritten} pruned={pruned} pruneSkipped={(pruneSkipped ? "true" : "false")} skippedInvalid={skippedInvalid}"));
+
+    public void FenceItemPruned(string fileName) => Info($"FenceItemPruned name=[{fileName}]");
+
+    public void DesktopScanPruneSkipped(string reason) => Warn($"DesktopScanPruneSkipped reason=[{reason}]");
+
+    public void StagingFenceMissing() => Error("StagingFenceMissing: 启动对账时找不到暂存方框，本次对账未写入任何行（不在此处重建）");
+
+    public void DesktopReconcileFailed(string error) => Error($"DesktopReconcileFailed {error}");
+
+    public void DesktopItemSkippedInvalidFileId(string fileName) => Warn($"DesktopItemSkippedInvalidFileId name=[{fileName}]");
 }
 
 /// <summary>把现有的 Trace.TraceWarning / TraceError 等也写进同一个日志文件。</summary>
