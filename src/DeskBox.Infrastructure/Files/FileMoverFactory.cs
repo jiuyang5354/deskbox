@@ -12,6 +12,9 @@ public static class FileMoverFactory
     /// <summary>文件属性探测（JournaledMove 用它在打开文件之前识别仅云端文件）。</summary>
     public static IFileSystemProbe CreateProbe() => new WindowsFileSystemProbe();
 
+    /// <summary>启动对账的扫描器（不吞读失败，TDD v1.0.14 §4.5.5）。</summary>
+    public static DesktopScanner CreateDesktopScanner() => new(new WindowsKnownFolders(), new WindowsDirectoryLister());
+
     public static IDesktopEnumerator CreateDesktopEnumerator() =>
         new DesktopEnumerator(new WindowsKnownFolders(), new WindowsDirectoryLister(), new FileSystemDirectoryWatcher());
 }

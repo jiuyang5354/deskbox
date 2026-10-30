@@ -402,7 +402,12 @@ public class DesktopScanLogTests
         public List<string> Lines { get; } = [];
         public void DesktopScanSkipped(string reason) => Lines.Add("skipped:" + reason);
         public void DesktopScanStarted() => Lines.Add("started");
-        public void DesktopScanCompleted(int u, int p, int w) => Lines.Add($"completed:{u}/{p}/{w}");
+        public void DesktopScanCompleted(int found, int written, int pruned, bool skipped, int invalid) => Lines.Add($"completed:{found}/{written}/{pruned}/{skipped}/{invalid}");
+        public void FenceItemPruned(string fileName) => Lines.Add("pruned:" + fileName);
+        public void DesktopScanPruneSkipped(string reason) => Lines.Add("pruneSkipped:" + reason);
+        public void StagingFenceMissing() => Lines.Add("stagingMissing");
+        public void DesktopReconcileFailed(string error) => Lines.Add("failed:" + error);
+        public void DesktopItemSkippedInvalidFileId(string fileName) => Lines.Add("invalidId:" + fileName);
     }
 
     private sealed class Parts(bool recoveryFails) : ISingleInstance, IDatabaseBootstrapper, IStagingSelfCheck, IStartupRecovery, IDesktopEnumerator, IStartupEmbedder, IStartupNotifier
@@ -426,12 +431,23 @@ public class DesktopScanLogTests
     }
 
     [Fact]
-    public async Task Ran_enumeration_logs_counts_and_rows_written()
+    public async Task Ran_enumeration_then_reconcile_before_embed_and_no_hardcoded_completed_line()
     {
         var p = new Parts(false);
         var log = new Rec();
-        await new StartupSequence(p, p, p, p, p, p, p, new OperatingMode(), log).RunAsync();
-        log.Lines.Should().Equal("started", "completed:2/1/0");
+        var reconcile = Substitute.For<IStartupReconcile>();
+        await new StartupSequence(p, p, p, p, p, p, p, new OperatingMode(), log, null, reconcile).RunAsync();
+        log.Lines.Should().Equal("started"); // DesktopScanCompleted 由对账写，不再写死 0
+        await reconcile.Received(1).RunAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Read_only_skips_reconcile()
+    {
+        var p = new Parts(true);
+        var reconcile = Substitute.For<IStartupReconcile>();
+        await new StartupSequence(p, p, p, p, p, p, p, new OperatingMode(), new Rec(), null, reconcile).RunAsync();
+        await reconcile.DidNotReceive().RunAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]

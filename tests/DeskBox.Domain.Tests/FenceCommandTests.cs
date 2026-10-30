@@ -21,6 +21,12 @@ internal sealed class InMemoryFenceItems : IFenceItemStore
         return Task.FromResult(Rows.TryGetValue(id, out var i) ? Clone(i) : null);
     }
 
+    public Task<IReadOnlyList<FenceItem>> ListAllAsync(IUnitOfWork uow, CancellationToken ct = default)
+    {
+        FakeDb.Of(uow).Read();
+        return Task.FromResult<IReadOnlyList<FenceItem>>(Rows.Values.Select(Clone).ToList());
+    }
+
     public Task<IReadOnlyList<FenceItem>> ListByFenceAsync(IUnitOfWork uow, Guid fenceId, CancellationToken ct = default)
     {
         FakeDb.Of(uow).Read();

@@ -37,6 +37,13 @@ public interface IStartupNotifier
     void ReadOnlyMode(string reason);
 }
 
+/// <summary>启动对账（TDD v1.0.14 §4.5.5），由 <see cref="Files.DesktopReconcile"/> 实现。</summary>
+public interface IStartupReconcile
+{
+    /// <summary>只读模式返回 null 并记 DesktopScanSkipped。</summary>
+    Task<Files.ReconcileResult?> RunAsync(CancellationToken ct = default);
+}
+
 /// <summary>启动时桌面扫描日志：只记数量，不记文件内容（TDD v1.0.13 §4.5.5）。</summary>
 public interface IDesktopScanLog
 {
@@ -45,5 +52,21 @@ public interface IDesktopScanLog
 
     void DesktopScanStarted();
 
-    void DesktopScanCompleted(int userDesktopItems, int publicDesktopItems, int fenceItemRowsWritten);
+    /// <summary>对账结束（TDD v1.0.14 §4.5.5 第 9 条）：fenceItemRowsWritten 是真实写入的行数；skippedInvalid 是 file_id 无效、未收也不删的项数。</summary>
+    void DesktopScanCompleted(int found, int fenceItemRowsWritten, int pruned, bool pruneSkipped, int skippedInvalid);
+
+    /// <summary>删掉一条磁盘上已不存在的归属行；只记文件名。</summary>
+    void FenceItemPruned(string fileName);
+
+    /// <summary>扫描不完整，一行都没删（警告）。</summary>
+    void DesktopScanPruneSkipped(string reason);
+
+    /// <summary>暂存方框不存在，对账什么都没写（不在这里重建）。</summary>
+    void StagingFenceMissing();
+
+    /// <summary>对账本身失败（数据库异常等），方框照常显示。</summary>
+    void DesktopReconcileFailed(string error);
+
+    /// <summary>file_id 无效、未收的桌面项（警告，只写文件名）。</summary>
+    void DesktopItemSkippedInvalidFileId(string fileName);
 }

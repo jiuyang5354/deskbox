@@ -73,6 +73,8 @@ public static class Win32FileAttributes
     public const uint RecallOnDataAccess = 0x0040_0000;
     public const uint CloudMask = Offline | RecallOnOpen | RecallOnDataAccess;
     public const uint Directory = 0x0000_0010;
+    public const uint Hidden = 0x0000_0002;
+    public const uint System = 0x0000_0004;
     public const uint ReparsePoint = 0x0000_0400;
 
     /// <summary>仅按属性位判断"仅云端"（RECALL_ON_DATA_ACCESS / RECALL_ON_OPEN / OFFLINE），绝不打开文件。</summary>

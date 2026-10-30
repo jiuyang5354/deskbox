@@ -200,6 +200,9 @@ public interface IFenceStore
 public interface IFenceItemStore
 {
     Task<FenceItem?> GetAsync(IUnitOfWork uow, Guid id, CancellationToken ct = default);
+    /// <summary>全部归属行（启动对账用，TDD v1.0.14 §4.5.5）。</summary>
+    Task<IReadOnlyList<FenceItem>> ListAllAsync(IUnitOfWork uow, CancellationToken ct = default);
+
     /// <summary>按 sort_order 升序。</summary>
     Task<IReadOnlyList<FenceItem>> ListByFenceAsync(IUnitOfWork uow, Guid fenceId, CancellationToken ct = default);
     Task UpsertAsync(IUnitOfWork uow, FenceItem item, CancellationToken ct = default);
